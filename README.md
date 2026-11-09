@@ -1,28 +1,17 @@
-# Facebook Laptop Tool
+# Facebook Tool
 
-Tool chạy trên Windows để theo dõi bài Facebook mới và thực hiện Like, Share, Comment theo cấu hình. Giao diện web chỉ mở trên máy tại `127.0.0.1`; SQLite lưu cấu hình, lịch sử chống trùng và kết quả từng thao tác.
+Tool theo dõi bài Facebook mới và thực hiện Like, Share, Comment theo cấu hình. Giao diện web chỉ mở trên máy tại `127.0.0.1`; SQLite lưu cấu hình, lịch sử chống trùng và kết quả từng thao tác.
 
 Điểm chính:
 
 - Lấy 5 bài hiện có làm mốc; theo dõi bài mới từ các lượt đọc tiếp theo.
 - Ba thao tác chạy song song trên tab nền, giữ nguyên cửa sổ đang thu nhỏ và ứng dụng bạn đang dùng.
 - Chỉnh bình luận luân phiên, lời chia sẻ, hashtag, nguồn và khoảng chờ trên giao diện.
-- Tab **Thời gian từng bài** đo phát hiện/hoàn tất từ lúc đăng, hiệu chỉnh lệch giờ máy với Facebook và hiển thị sai số.
 - Lưu công việc trước khi gửi; kết quả chưa rõ cần đối soát, không tự gửi lại.
 
 ## Cài đặt trên máy mới
 
 Yêu cầu: **Windows, Node.js 24.x, Git**, Chrome hoặc Edge đã cài. Không cần cài thêm browser của Playwright; project dùng `playwright-core` với trình duyệt có sẵn.
-
-Mở PowerShell:
-
-```powershell
-git clone https://github.com/NhatDuy288/facebook-laptop-tool.git
-cd facebook-laptop-tool
-npm.cmd ci --ignore-scripts
-Copy-Item sources.example.json sources.local.json
-notepad sources.local.json
-```
 
 Sửa `sources.local.json` bằng nguồn của bạn:
 
