@@ -1,0 +1,23 @@
+{
+  "name": "facebook-laptop-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node --test src/*.test.ts src/facebook/*.test.ts src/facebook/feed/*.test.ts",
+    "test:reader": "node --test src/facebook/feed/*.test.ts"
+  },
+  "dependencies": {
+    "playwright-core": "1.65.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "typescript": "7.0.2"
+  },
+  "description": "Local Facebook monitoring and interaction tool for Windows"
+}

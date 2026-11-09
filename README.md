@@ -1,0 +1,93 @@
+# Facebook Laptop Tool
+
+Tool chạy trên Windows để theo dõi bài Facebook mới và thực hiện Like, Share, Comment theo cấu hình. Giao diện web chỉ mở trên máy tại `127.0.0.1`; SQLite lưu cấu hình, lịch sử chống trùng và kết quả từng thao tác.
+
+Điểm chính:
+
+- Lấy 5 bài hiện có làm mốc; theo dõi bài mới từ các lượt đọc tiếp theo.
+- Ba thao tác chạy song song trên tab nền, giữ nguyên cửa sổ đang thu nhỏ và ứng dụng bạn đang dùng.
+- Chỉnh bình luận luân phiên, lời chia sẻ, hashtag, nguồn và khoảng chờ trên giao diện.
+- Tab **Thời gian từng bài** đo phát hiện/hoàn tất từ lúc đăng, hiệu chỉnh lệch giờ máy với Facebook và hiển thị sai số.
+- Lưu công việc trước khi gửi; kết quả chưa rõ cần đối soát, không tự gửi lại.
+
+## Cài đặt trên máy mới
+
+Yêu cầu: **Windows, Node.js 24.x, Git**, Chrome hoặc Edge đã cài. Không cần cài thêm browser của Playwright; project dùng `playwright-core` với trình duyệt có sẵn.
+
+Mở PowerShell:
+
+```powershell
+git clone https://github.com/NhatDuy288/facebook-laptop-tool.git
+cd facebook-laptop-tool
+npm.cmd ci --ignore-scripts
+Copy-Item sources.example.json sources.local.json
+notepad sources.local.json
+```
+
+Sửa `sources.local.json` bằng nguồn của bạn:
+
+- `test-profile`: profile dùng thử nghiệm, URL dạng `https://www.facebook.com/profile.php?id=ID`.
+- `page`: Page cần theo dõi, dùng URL chính tắc và ID Facebook dạng số của đúng Page.
+- `name`: tên hiển thị trong danh sách nguồn; `sourceId`: ID dạng chuỗi; `url`: địa chỉ nguồn.
+
+File mẫu chỉ chứa ID và địa chỉ minh họa. Thay thông tin ở mục bạn sử dụng, rồi chọn mục đó trên UI. Không dùng ID bài đăng thay cho ID nguồn. Khởi động lại tool sau khi sửa file nguồn.
+
+`sources.local.json` được Git bỏ qua để giữ nguồn theo dõi riêng trên từng máy. Không sửa file mẫu thành nguồn cá nhân rồi commit lên public.
+
+## Chạy tool
+
+Mở `Start-Tool.cmd`, hoặc chạy:
+
+```powershell
+npm.cmd start
+```
+
+1. Trong cửa sổ được mở, bấm **Mở Facebook / Đăng nhập** và đăng nhập tài khoản cá nhân dùng tương tác.
+2. Chọn nguồn, chế độ, nội dung và từng thao tác cần bật. Bấm **Lưu cấu hình**; nút **Lấy mốc/Bắt đầu** cũng lưu các thay đổi trước khi chạy.
+3. Bấm **Lấy mốc 5 bài** để kiểm tra nguồn. Bấm **Bắt đầu** để lấy mốc mới và theo dõi liên tục.
+4. Có thể thu nhỏ trình duyệt và làm việc khác. Giữ tiến trình chạy, máy có mạng và không ngủ.
+5. **Dừng ngay** ngăn phần chưa gửi; **Đóng tool** đóng ứng dụng và trình duyệt riêng.
+
+Mỗi lần khởi động có thể dùng cổng khác. Dùng địa chỉ/cửa sổ mới được tool mở; địa chỉ hiện tại cũng nằm trong `data/runtime.json`.
+
+## Chế độ và kết quả
+
+| Chế độ | Hành vi |
+| --- | --- |
+| Chạy thử | Chỉ ghi nhận thao tác dự kiến; mặc định khi cài mới. |
+| Test | Gửi các thao tác đã bật; Share đặt Chỉ mình tôi. |
+| Thực tế | Gửi các thao tác đã bật; Share đặt Công khai, có xác nhận khi bật. |
+
+Like và Comment nằm trên bài gốc nên quyền xem phụ thuộc bài đó. **Thử trên bài có sẵn** chỉ dành cho nguồn thử nghiệm trong chế độ Test; không dùng lượt thử này để đo tốc độ phát hiện bài mới.
+
+- **Thành công:** không gửi lại.
+- **Lỗi trước khi gửi/Đã dừng:** có thể tiếp tục phần chưa gửi khi đúng tài khoản, nguồn và chế độ.
+- **Chưa rõ kết quả:** bấm **Đối soát với Facebook** hoặc kiểm tra thủ công trước khi xác nhận trạng thái và thử lại.
+
+## Đọc số đo thời gian
+
+Bảng chính lấy **giờ đăng bài** làm mốc cho phát hiện, Like xong, Share xong, Comment xong. Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.
+
+Mở **Chi tiết** để xem thời gian đọc, khoảng cách hai lượt đọc, chờ trước thao tác và xử lý riêng từng thao tác. Ví dụ: phát hiện sau 3 giây, chờ 1 giây, Like mất 7 giây thì Like xong khoảng 11 giây từ lúc đăng.
+
+Khoảng chờ mặc định **5 giây bắt đầu sau khi lượt đọc trước kết thúc**; chu kỳ thực tế còn có thời gian đọc. Đây không phải cam kết phát hiện trong tối đa 5 giây. Phép đo từ giờ đăng là ước tính có sai số do mạng/độ chính xác giờ Facebook. Dữ liệu cũ hoặc thiếu hiệu chỉnh để trống.
+
+## Dữ liệu riêng và chuyển máy
+
+Không đưa `data/`, `sources.local.json`, cookie, hồ sơ trình duyệt hoặc log lên GitHub. `.gitignore` đã loại các mục này.
+
+Clone chỉ chuyển mã nguồn. Trên máy mới cần cấu hình nguồn và đăng nhập lại; lịch sử trên máy cũ không tự đồng bộ. Không chạy đồng thời hai bản cùng tài khoản/nguồn. Khi Bắt đầu, 5 bài có sẵn được bỏ qua; tool không quét bù bài trong lúc tắt.
+
+## Phát triển và kiểm tra
+
+```powershell
+npm.cmd run check
+npm.cmd test
+npm.cmd run test:reader
+```
+
+Các kiểm thử dùng dữ liệu giả lập, không đăng lên Facebook thật. Kiểm tra giữ focus/cửa sổ trên Windows được bật riêng bằng `TOOL_FOCUS_TEST=1`; cần desktop tương tác và mở cửa sổ trình duyệt thử nghiệm.
+
+Mã chính: `src/engine.ts` điều phối, `src/store.ts` lưu SQLite, `src/facebook/` điều khiển trình duyệt/tương tác, `src/facebook/feed/` đọc và xác minh danh sách, `public/` là UI. Yêu cầu nghiệp vụ gọn nằm trong [BRD](BRD-Facebook-Automation.md).
+
+Tool tự động hóa trình duyệt, không phải ứng dụng chính thức của Meta. Thay đổi giao diện Facebook có thể cần cập nhật bộ đọc/thao tác; khi không xác minh được dữ liệu, tool dừng phần tương ứng. Chưa có cam kết chạy ổn định 24/7 hoặc hỗ trợ mọi dạng Reels/Stories/live.

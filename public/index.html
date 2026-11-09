@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Facebook Laptop Tool</title><link rel="stylesheet" href="/style.css"></head>
+<body><div class="shell">
+<header><div class="brand"><span class="brand-icon">F</span><div><strong>Facebook Laptop Tool</strong><span class="muted">Theo dõi và tương tác · Chạy trên laptop</span></div></div>
+<div class="header-actions"><span id="phase" class="pill">Đang kết nối</span><button id="login" class="secondary">Mở Facebook / Đăng nhập</button><button id="shutdown" class="quiet">Đóng tool</button></div></header>
+<div id="toast" role="alert" hidden></div>
+<nav class="view-tabs" role="tablist" aria-label="Màn hình tool">
+<button id="overview-tab" class="view-tab active" role="tab" aria-selected="true" aria-controls="overview-panel">Điều khiển</button>
+<button id="timing-tab" class="view-tab" role="tab" aria-selected="false" aria-controls="timing-panel" tabindex="-1">Thời gian từng bài</button>
+</nav>
+<div id="overview-panel" role="tabpanel" aria-labelledby="overview-tab">
+<section class="control card"><div><h1>Theo dõi bài mới</h1><p id="note" aria-live="polite">Đang kết nối với ứng dụng…</p><div id="account" class="muted">Chưa xác minh tài khoản theo dõi</div></div>
+<div class="run-buttons"><button id="baseline" class="secondary">Lấy mốc 5 bài</button><button id="start" class="primary">Bắt đầu</button><button id="stop" class="danger">Dừng ngay</button></div></section>
+<div class="metrics"><div class="metric"><span>Lượt đọc / Yêu cầu nền</span><strong id="reads">0 / 0</strong></div><div class="metric"><span>Lượt đọc gần nhất</span><strong id="latency">—</strong></div><div class="metric"><span>Dữ liệu đọc trong phiên</span><strong id="bytes">0 MB</strong></div><div class="metric"><span>Lần đọc thành công</span><strong id="last-read">—</strong></div></div>
+<main><section class="card config-panel"><div class="section-title"><h2>Cấu hình</h2><span id="saved" class="muted">Đã lưu</span></div>
+<form id="config-form">
+<label>Nguồn theo dõi<select id="target">__SOURCE_OPTIONS__</select></label>
+<a id="source-url" href="#" target="_blank" rel="noreferrer">Mở nguồn theo dõi ↗</a>
+<div class="row"><label>Chế độ<select id="mode"><option value="dry-run">Chạy thử · chỉ ghi nhận</option><option value="test">Test · chia sẻ Chỉ mình tôi</option><option value="live">Thực tế · chia sẻ Công khai</option></select></label><label>Chờ giữa các lượt (giây)<input id="poll-seconds" type="number" min="1" max="300" required value="5"></label></div>
+<p id="mode-note" class="notice">Chạy thử chỉ ghi lại nội dung dự kiến.</p>
+<fieldset><legend>Thao tác tự động</legend><label class="check"><input id="enable-like" type="checkbox" checked> Like</label><label class="check"><input id="enable-share" type="checkbox" checked> Share</label><label class="check"><input id="enable-comment" type="checkbox" checked> Comment</label></fieldset>
+<label>Danh sách bình luận <span class="muted">Mỗi dòng một nội dung; dùng lần lượt rồi quay vòng</span><textarea id="comments" rows="5" maxlength="100000" placeholder="test 1&#10;test 2&#10;test 3&#10;test 4"></textarea></label>
+<label>Lời chia sẻ<textarea id="share-text" rows="3" maxlength="5000" placeholder="Nhập lời chia sẻ"></textarea></label>
+<label>Hashtag <span class="muted">Cách nhau bằng dấu cách hoặc xuống dòng</span><textarea id="hashtags" rows="2" placeholder="#test #hashtag"></textarea></label>
+<label class="check session-option"><input id="keep-session" type="checkbox" checked> Giữ phiên đăng nhập trên laptop</label>
+<p class="muted small">Thay lựa chọn giữ phiên có hiệu lực từ lần mở tool tiếp theo.</p>
+<button id="save" class="primary" type="submit">Lưu cấu hình</button>
+</form></section>
+<div class="right-column"><section class="card next-plan"><span class="eyebrow">ĐÃ CHUẨN BỊ TRƯỚC</span><h2>Bình luận cho bài kế tiếp</h2><div id="next-comment" class="comment-preview">—</div><div class="muted small">Việc đã nhận giữ nguyên nội dung, kể cả khi bạn sửa danh sách.</div><details><summary>Xem trước nội dung chia sẻ</summary><div id="share-preview" class="share-preview"></div><p id="audience-preview" class="muted small"></p></details></section>
+<section class="card"><div class="section-title"><h2>Cửa sổ 5 bài hiện tại</h2><span id="window-count" class="pill neutral">0 / 5</span></div><p class="muted small">Mỗi lần Bắt đầu lấy mốc mới. Bài có sẵn và bài trong lúc tắt tool được bỏ qua.</p><div class="table-scroll"><table><thead><tr><th>Bài viết</th><th>Thời gian đăng</th><th></th></tr></thead><tbody id="posts"><tr><td colspan="3" class="empty">Chưa lấy mốc.</td></tr></tbody></table></div>
+<div id="test-controls" class="test-controls" hidden><p class="small">Thử tương tác trên một bài có sẵn của Nguồn thử nghiệm, theo nội dung và thao tác đang bật.</p><button id="test-existing" class="secondary">Thử trên bài được chọn</button></div></section>
+<section class="card"><div class="section-title"><h2>Kết quả tương tác</h2><span id="queue" class="muted small"></span></div><div id="jobs"><div class="empty">Chưa có công việc. Công việc mới sẽ xuất hiện khi phát hiện bài hợp lệ.</div></div></section></div></main>
+<section class="card logs"><div class="section-title"><h2>Nhật ký</h2><span class="muted small">Hiện 100 dòng gần nhất · Lưu 30 ngày</span></div><div id="logs" role="log"></div></section>
+</div>
+<section id="timing-panel" class="card timing-panel" role="tabpanel" aria-labelledby="timing-tab" hidden>
+<div class="section-title"><div><h1>Thời gian từng bài</h1><p class="muted">Đo tốc độ phát hiện và hoàn tất, tính từ lúc bài được đăng trên Facebook.</p></div><span id="timing-count" class="pill neutral">0 bài</span></div>
+<div class="timing-help"><p><strong>Bảng chính: từ lúc đăng bài → từng mốc.</strong> Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.</p><p><strong>Chi tiết bên dưới: thời gian tool đọc, chờ và xử lý.</strong> Ví dụ: phát hiện sau 3 giây, Like mất 7 giây → Like xong khoảng 10 giây từ lúc đăng, nếu không phải chờ hàng đợi.</p></div>
+<p class="timing-legend small"><strong>≈</strong> là ước tính đã hiệu chỉnh lệch giờ máy với Facebook. <strong>±</strong> là sai số của phép đo. Từ 60 giây trở lên hiển thị phút và giây.</p>
+<div class="table-scroll"><table class="timing-table"><thead><tr><th>Bài viết / nguồn</th><th>Thời gian up bài</th><th>Phát hiện<br><span class="timing-header-note">từ lúc đăng</span></th><th>Like xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Share xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Comment xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Hoàn thành<br><span class="timing-header-note">từ lúc đăng</span></th></tr></thead><tbody id="timing-rows"><tr><td colspan="7" class="empty">Chưa có bài được ghi nhận.</td></tr></tbody></table></div>
+<p class="muted small">Hiển thị 60 lượt xử lý gần nhất, tự cập nhật khi tool chạy. Lượt cũ thiếu dữ liệu đo sẽ để trống thời gian từ lúc đăng. Thử bài có sẵn chỉ đo từ lúc bấm thử; chế độ chia sẻ Chỉ mình tôi vẫn có thể theo dõi bài mới. Thao tác đã có từ trước, đối soát hoặc xác nhận thủ công không có mốc hoàn tất để đo.</p>
+</section>
+<footer>Chờ kiểm tra được tính sau khi lượt đọc kết thúc. Tool chỉ hoạt động khi laptop bật, có mạng và không ngủ. <span id="runtime-info"></span></footer>
+</div><script nonce="__TOOL_NONCE__">window.toolKey="__TOOL_NONCE__";</script><script nonce="__TOOL_NONCE__" src="/app.js"></script></body></html>

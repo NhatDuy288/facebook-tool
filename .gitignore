@@ -1,0 +1,16 @@
+node_modules/
+data/
+sources.local.json
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite*
+*.db
+*.har
+*.zip
+playwright-report/
+test-results/
+.idea/
+.vscode/
+.DS_Store
