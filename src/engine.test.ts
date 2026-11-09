@@ -28,6 +28,72 @@ class FakeActions implements ActionAdapter {
   }
   async stop(){this.barrier?.();} async close(){}
 }
+
+test('step traces are live in memory, durable at completion and separate server response from read-back', async () => {
+  const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test', pollSeconds: 1 });
+  let release!: () => void, responses = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const reader: Reader = new FakeReader([read(), read(), { ...read([post('6', 110), ...old.slice(0, 4)]),
+    observations: { '6': { observedAt: new Date().toISOString(), publicationDelayMs: 4500,
+      uncertaintyMs: 600, clockOffsetMs: -240000, clockSource: 'facebook-response' } } }]);
+  const adapter: ActionAdapter = {
+    async prepare() { await delay(5); }, async stop() { release(); }, async close() {},
+    async execute(name, _job, hooks) {
+      hooks.onStage?.('navigate_original_post'); await delay(10);
+      hooks.onStage?.('prepare_submission'); hooks.beforeSubmit();
+      hooks.onStage?.('wait_server'); await delay(10);
+      hooks.onServerResponse?.(name === 'comment' ? 'acknowledged' : 'confirmed'); responses++;
+      await gate;
+      hooks.onStage?.(name === 'comment' ? 'comment_readback_find' : name === 'share' ? 'share_readback_verify' : 'verify_like');
+      await delay(10); return { code: 'TEST_CONFIRMED' };
+    },
+  };
+  const engine = new Engine(store, reader, adapter);
+  try {
+    engine.start(); await until(() => responses === 3);
+    const live = engine.status().jobs[0];
+    for (const a of live.actions) {
+      assert.equal(a.timing!.trace!.finishedMs, null);
+      assert.equal(a.timing!.trace!.steps.at(-1)!.status, 'running');
+      assert.equal(typeof a.timing!.trace!.milestones.submitStarted, 'number');
+      assert.ok(a.timing!.preparation!.tabsMs >= 4);
+      assert.deepEqual(store.job(live.id)!.actions.find(stored => stored.name === a.name)!.timing!.trace!.milestones, {},
+        'steps are not synchronously written to SQLite for every event');
+    }
+    assert.equal(live.actions.find(a => a.name === 'comment')!.timing!.trace!.milestones.serverConfirmed, undefined);
+    release(); await until(() => !engine.activeJob);
+    const saved = store.job(live.id)!;
+    for (const a of saved.actions) {
+      const trace = a.timing!.trace!, response = trace.milestones[a.name === 'comment' ? 'serverAcknowledged' : 'serverConfirmed']!;
+      assert.ok(trace.finishedMs! > response);
+      assert.ok(a.timing!.processingMs! >= trace.finishedMs!);
+      assert.ok(trace.steps.every(step => step.status === 'completed' && step.endMs >= step.startMs));
+      assert.ok(Math.abs(a.timing!.fromPublicationMs! - 4500 - a.timing!.fromDetectionMs!) < 0.001);
+    }
+    assert.equal(engine.activeTraces.size, 0);
+  } finally { await engine.close(); store.close(); }
+});
+
+test('a failed read-back preserves server confirmation but never reports verified completion', async () => {
+  const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
+  const session = store.baseline('10', '20', 100, old);
+  const job = store.testJob('10', '20', session, post('6', 110), store.config());
+  const adapter: ActionAdapter = { async prepare() {}, async stop() {}, async close() {},
+    async execute(_name, _job, hooks) {
+      hooks.beforeSubmit(); hooks.onStage?.('wait_server'); hooks.onServerResponse?.('confirmed');
+      hooks.onStage?.('share_readback_verify'); throw Error('RESULT_UNCONFIRMED');
+    } };
+  const engine = new Engine(store, new FakeReader([read()]), adapter);
+  try {
+    await engine.perform('share', job, new AbortController().signal);
+    const action = store.job(job.id)!.actions.find(a => a.name === 'share')!;
+    assert.equal(action.state, 'unknown');
+    assert.equal(typeof action.timing!.trace!.milestones.serverConfirmed, 'number');
+    assert.equal(action.timing!.fromPublicationMs, null);
+    assert.equal(action.timing!.trace!.steps.at(-1)!.status, 'interrupted');
+    assert.equal(engine.activeTraces.size, 0);
+  } finally { await engine.close(); store.close(); }
+});
 test('new verified posts create one durable job and all three actions start in parallel',async()=>{
   const store=new Store(':memory:');store.saveConfig({...DEFAULT_CONFIG,mode:'test',pollSeconds:1});
   const adapter=new FakeActions(),reader=new FakeReader([read(),read(),read([post('6',110),...old.slice(0,4)])]);

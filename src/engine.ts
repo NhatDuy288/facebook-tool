@@ -4,7 +4,8 @@ import { ACTIONS, type Config, type ActionName } from './config.ts';
 import { READ_TARGETS } from './facebook/feed/read-target.ts';
 import { Store } from './store.ts';
 import { errorCode, message } from './errors.ts';
-import type { Reader, ActionAdapter, Account, WindowRead, Post, Job, JobTiming, ActionTiming, ReadTiming } from './types.ts';
+import { ActionTrace } from './action-trace.ts';
+import type { Reader, ActionAdapter, Account, WindowRead, Post, Job, JobTiming, ActionTiming, ReadTiming, ActionPreparation } from './types.ts';
 export type Phase = 'idle' | 'initializing' | 'ready' | 'watching' | 'stopping' | 'error';
 export class Engine {
   store: Store; reader: Reader; adapter: ActionAdapter;
@@ -17,7 +18,8 @@ export class Engine {
   stoppingTask: Promise<void> | null = null;
   queue: string[] = []; closed = false;
   lastReadTiming: ReadTiming | null = null;
-  jobClocks = new Map<string, { referenceMono: number; requestedMono: number; origin: 'watch' | 'existing-test'; publicationDelayMs: number | null; uncertaintyMs: number | null }>();
+  jobClocks = new Map<string, { referenceMono: number; requestedMono: number; readCompletedMono: number; origin: 'watch' | 'existing-test'; publicationDelayMs: number | null; uncertaintyMs: number | null }>();
+  activeTraces = new Map<string, { trace: ActionTrace; timing: ActionTiming }>();
   constructor(store: Store, reader: Reader, adapter: ActionAdapter) { this.store = store; this.reader = reader; this.adapter = adapter; }
   busy() { return ['initializing', 'watching', 'stopping'].includes(this.phase) || !!this.activeJob || this.queue.length > 0; }
   status() {
@@ -31,7 +33,11 @@ export class Engine {
         lastPollWaitMs: this.lastReadTiming?.waitMs ?? null,
         facebookClockOffsetMs: observation?.clockOffsetMs ?? null, clockUncertaintyMs: observation?.uncertaintyMs ?? null,
         errors: this.consecutiveErrors, nodeMemoryMB: Math.round(process.memoryUsage().rss / 1048576) },
-      activeJob: this.activeJob, queuedJobs: this.queue.length, jobs: this.store.jobs(), logs: this.store.logs() };
+      activeJob: this.activeJob, queuedJobs: this.queue.length, jobs: this.store.jobs().map(job => ({ ...job,
+        actions: job.actions.map(action => {
+          const active = this.activeTraces.get(job.id + ':' + action.name);
+          return active ? { ...action, timing: { ...active.timing, trace: active.trace.snapshot() } } : action;
+        }) })), logs: this.store.logs() };
   }
   saveConfig(input: unknown): Config {
     const current = this.store.config();
@@ -104,7 +110,7 @@ export class Engine {
         for (const job of jobs) {
           const observed = read.observations?.[job.post.post_id];
           this.jobClocks.set(job.id, { referenceMono: observed?.observedMonoMs ?? read.readTiming!.completedMonoMs,
-            requestedMono, origin: 'watch', publicationDelayMs: job.timing?.publicationDelayMs ?? null,
+            requestedMono, readCompletedMono: read.readTiming!.completedMonoMs, origin: 'watch', publicationDelayMs: job.timing?.publicationDelayMs ?? null,
             uncertaintyMs: job.timing?.uncertaintyMs ?? null });
           this.store.log('info', job.mode === 'dry-run' ? 'POST_SIMULATED' : 'POST_DETECTED',
             `Nhận bài mới ${job.post.post_id}; ${job.mode === 'dry-run' ? 'đã ghi thao tác dự kiến' : 'đã lưu nội dung và công việc'}.`, job.id);
@@ -156,7 +162,7 @@ export class Engine {
     if (!post || !this.account || !this.sessionId) throw Error('NO_BASELINE');
     const referenceMono = performance.now(), requestedAt = new Date().toISOString();
     const job = this.store.testJob(this.account.id, READ_TARGETS[config.target].sourceId, this.sessionId, post, config, requestedAt);
-    if (!this.jobClocks.has(job.id) && job.timing?.requestedAt === requestedAt) this.jobClocks.set(job.id, { referenceMono, requestedMono: referenceMono,
+    if (!this.jobClocks.has(job.id) && job.timing?.requestedAt === requestedAt) this.jobClocks.set(job.id, { referenceMono, requestedMono: referenceMono, readCompletedMono: referenceMono,
       origin: 'existing-test', publicationDelayMs: null, uncertaintyMs: null });
     this.enqueue(job.id); return job.id;
   }
@@ -201,21 +207,30 @@ export class Engine {
     while (this.queue.length && !signal.aborted) {
       const id = this.queue.shift()!, job = this.store.job(id)!; this.activeJob = id;
       try {
+        const dispatchStarted = performance.now(), clock = this.jobClocks.get(id);
         await this.adapter.prepare(this.account!); signal.throwIfAborted();
+        const preparation: ActionPreparation = {
+          readRemainderMs: clock ? Math.max(0, clock.readCompletedMono - clock.referenceMono) : null,
+          dispatchWaitMs: clock ? Math.max(0, dispatchStarted - clock.readCompletedMono) : null,
+          tabsMs: performance.now() - dispatchStarted };
         // Each worker owns a separate tab; all enabled actions enter together.
-        await Promise.all(ACTIONS.map(name => this.perform(name, job, signal)));
+        await Promise.all(ACTIONS.map(name => this.perform(name, job, signal, preparation)));
       } finally { await this.adapter.release?.(); this.activeJob = null; }
     }
   }
-  async perform(name: ActionName, job: Job, signal: AbortSignal): Promise<void> {
+  async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation): Promise<void> {
     const started = performance.now(), startedAt = new Date().toISOString(), clock = this.jobClocks.get(job.id);
+    const trace = new ActionTrace(started); trace.enter('prepare_action');
     const initialTiming: ActionTiming = { version: 2, startedAt, finishedAt: null, queueMs: clock ? started - clock.referenceMono : null,
-      processingMs: null, fromDetectionMs: null, fromRequestMs: null, fromPublicationMs: null, uncertaintyMs: clock?.uncertaintyMs ?? null };
+      processingMs: null, fromDetectionMs: null, fromRequestMs: null, fromPublicationMs: null, uncertaintyMs: clock?.uncertaintyMs ?? null,
+      preparation, trace: trace.snapshot() };
     if (signal.aborted || !this.store.transition(job.id, name, ['ready'], 'preparing', { timing: initialTiming })) return;
+    const traceKey = job.id + ':' + name;
+    this.activeTraces.set(traceKey, { trace, timing: initialTiming });
     let submitted = false;
     const finishTiming = (confirmed: boolean): ActionTiming => {
       const finished = performance.now(), fromReference = clock ? finished - clock.referenceMono : null;
-      return { ...initialTiming, finishedAt: new Date().toISOString(), processingMs: finished - started,
+      return { ...initialTiming, trace: trace.snapshot(), finishedAt: new Date().toISOString(), processingMs: finished - started,
         fromDetectionMs: confirmed && clock?.origin === 'watch' ? fromReference : null,
         fromRequestMs: confirmed && clock ? finished - clock.requestedMono : null,
         fromPublicationMs: confirmed && clock?.origin === 'watch' && clock.publicationDelayMs !== null && fromReference !== null
@@ -223,14 +238,18 @@ export class Engine {
     };
     try {
       const result = await this.adapter.execute(name, job, { signal,
+        onStage: stage => trace.enter(stage),
+        onServerResponse: kind => trace.mark(kind === 'confirmed' ? 'serverConfirmed' : 'serverAcknowledged'),
         onServerConfirmed: result => this.store.evidence(job.id, name, result), beforeSubmit: () => {
         signal.throwIfAborted();
         if (!this.store.transition(job.id, name, ['preparing'], 'submitting')) throw Error('STOPPED');
-        submitted = true; signal.throwIfAborted();
+        submitted = true; trace.mark('submitStarted'); signal.throwIfAborted();
       } });
+      trace.finish();
       this.store.transition(job.id, name, ['preparing', 'submitting'], 'succeeded', { ...result, timing: finishTiming(result.code !== 'ALREADY_LIKED') });
       this.store.log('info', 'ACTION_SUCCEEDED', `${name}: đã xác nhận kết quả (${Math.round(performance.now() - started)} ms).`, job.id);
     } catch (error) {
+      trace.finish(true);
       const actionCode = error instanceof Error && ['TimeoutError'].includes(error.name) ? 'UI_UNSUPPORTED' : errorCode(error);
       const code = submitted ? 'RESULT_UNCONFIRMED' : signal.aborted ? 'STOPPED' : actionCode;
       this.store.transition(job.id, name, ['preparing', 'submitting'], submitted ? 'unknown' : signal.aborted ? 'cancelled' : 'failed', { code, timing: finishTiming(false) });
@@ -238,7 +257,7 @@ export class Engine {
       if (['LOGIN_REQUIRED', 'LOGIN_OR_CHECKPOINT', 'ACTOR_CHANGED', 'PERSONAL_ACCOUNT_REQUIRED'].includes(errorCode(error))) {
         this.abort.abort(); this.queue = []; void this.adapter.stop(); this.phase = 'error'; this.note = message(errorCode(error));
       }
-    }
+    } finally { this.activeTraces.delete(traceKey); }
   }
   fail(error: unknown) {
     if (this.abort.signal.aborted) { if (this.phase !== 'error' && this.phase !== 'stopping') { this.phase = 'idle'; this.note = message('STOPPED'); } return; }

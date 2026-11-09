@@ -14,7 +14,21 @@ export type JobTiming = { version: 2; origin: 'watch' | 'existing-test'; request
   readDurationMs: number | null; readIntervalMs: number | null; pollWaitMs: number | null; pollSeconds: number | null };
 export type ActionTiming = { version: 2; startedAt: string; finishedAt: string | null; queueMs: number | null;
   processingMs: number | null; fromDetectionMs: number | null; fromRequestMs: number | null;
-  fromPublicationMs: number | null; uncertaintyMs: number | null };
+  fromPublicationMs: number | null; uncertaintyMs: number | null;
+  preparation?: ActionPreparation; trace?: ActionTraceData };
+export type ActionPreparation = { readRemainderMs: number | null; dispatchWaitMs: number | null; tabsMs: number };
+export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_original_post' | 'find_post_scope'
+  | 'find_action_bar' | 'check_existing_reaction' | 'open_comment_editor' | 'fill_comment'
+  | 'open_share_composer' | 'share_menu_fallback' | 'verify_share_destination' | 'set_share_audience'
+  | 'fill_share' | 'verify_share_before_submit' | 'prepare_submission' | 'submit' | 'wait_server'
+  | 'verify_like' | 'comment_readback_open_tab' | 'comment_readback_navigate' | 'comment_readback_verify'
+  | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
+  | 'share_readback_navigate' | 'share_readback_verify' | 'share_readback_scope'
+  | 'share_readback_audience' | 'cleanup';
+export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed';
+export type ActionTraceStep = { stage: ActionStage; startMs: number; endMs: number; status: 'completed' | 'running' | 'interrupted' };
+export type ActionTraceData = { version: 1; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
+  finishedMs: number | null };
 export type Account = { id: string; name: string };
 export type ActionState = 'ready' | 'preparing' | 'submitting' | 'succeeded' | 'failed' | 'unknown' | 'cancelled' | 'simulated' | 'skipped';
 export type ActionResult = { name: ActionName; state: ActionState; code: string | null; startedAt: string | null;
@@ -25,7 +39,8 @@ export type Job = { id: string; sessionId: string; accountId: string; sourceId: 
 export type LogEntry = { id: number; at: string; level: 'info' | 'warning' | 'error'; code: string; text: string; jobId: string | null };
 export type Reader = { prepare(target: Config['target'], signal: AbortSignal): Promise<Account>;
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
-export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void };
+export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
+  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
 export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string };
 export type ActionAdapter = { prepare(account: Account): Promise<void>;
   execute(name: ActionName, job: Job, hooks: SubmitHooks): Promise<ConfirmedResult>;

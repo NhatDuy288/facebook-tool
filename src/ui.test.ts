@@ -81,7 +81,13 @@ test('timing tab measures from publication and only completes confirmed enabled 
     const localAt = (seconds: number) => at(seconds + 236);
     const actionTime = (finished: number) => ({ version: 2, startedAt: localAt(5), finishedAt: localAt(finished),
       queueMs: 800, processingMs: (finished - 5) * 1000, fromDetectionMs: (finished - 4.2) * 1000,
-      fromRequestMs: (finished - 4.2) * 1000, fromPublicationMs: finished * 1000, uncertaintyMs: 1100 });
+      fromRequestMs: (finished - 4.2) * 1000, fromPublicationMs: finished * 1000, uncertaintyMs: 1100,
+      preparation: { readRemainderMs: 600, dispatchWaitMs: 100, tabsMs: 100 },
+      trace: { version: 1, finishedMs: (finished - 5) * 1000,
+        milestones: { submitStarted: 4000, serverConfirmed: (finished - 6) * 1000 },
+        steps: [{ stage: 'navigate_original_post', startMs: 0, endMs: 2000, status: 'completed' },
+          { stage: 'wait_server', startMs: 2000, endMs: (finished - 6) * 1000, status: 'completed' },
+          { stage: 'share_readback_verify', startMs: (finished - 6) * 1000, endMs: (finished - 5) * 1000, status: 'completed' }] } });
     const complete = {
       id: 'timing-example', sourceId: '123456789', mode: 'test', createdAt: localAt(4.2), origin: 'watch',
       timing: { version: 2, origin: 'watch', requestedAt: localAt(4.2), detectedAt: localAt(4.2), publicationDelayMs: 4200,
@@ -123,13 +129,13 @@ test('timing tab measures from publication and only completes confirmed enabled 
     assert.equal(await page.locator('#timing-tab').getAttribute('aria-selected'), 'true');
     const rows = page.locator('#timing-rows > .timing-job-row');
     const first = rows.nth(0).locator('td');
-    assert.equal(await first.nth(2).innerText(), '≈ 4,2 giây\nSai số ±1,1 giây');
+    assert.equal(await first.nth(2).innerText(), '≈ 4,2 giây');
     assert.match(await first.nth(3).innerText(), /^≈ 11,7 giây/);
     assert.match(await first.nth(4).innerText(), /^≈ 18,3 giây/);
     assert.match(await first.nth(5).innerText(), /^≈ 18,8 giây/);
-    assert.equal(await first.nth(6).innerText(), '≈ 18,8 giây\nComment xong cuối\nSai số ±1,1 giây');
+    assert.equal(await first.nth(6).innerText(), '≈ 18,8 giây\nComment xong cuối');
     assert.equal(await rows.nth(1).locator('td').last().innerText(), '—\nĐang xử lý');
-    assert.equal(await rows.nth(2).locator('td').last().innerText(), '≈ 18,3 giây\nShare xong cuối\nSai số ±1,1 giây');
+    assert.equal(await rows.nth(2).locator('td').last().innerText(), '≈ 18,3 giây\nShare xong cuối');
     assert.equal(await rows.nth(3).locator('td').last().innerText(), '—\nThiếu dữ liệu đo');
     assert.equal(await rows.nth(4).locator('td').last().innerText(), '—\nChưa hoàn tất');
     assert.equal(await rows.nth(5).locator('td').last().innerText(), '—\nChỉ ghi nhận');
@@ -144,6 +150,32 @@ test('timing tab measures from publication and only completes confirmed enabled 
     assert.equal(invalid.total, null);
     await page.locator('.timing-diagnostics summary').first().click();
     assert.match(await page.locator('.timing-diagnostics').first().innerText(), /Giờ máy nhanh hơn Facebook 3 phút 56 giây/);
+    assert.doesNotMatch(await page.locator('.timing-diagnostics').first().innerText(), /Sai số|±/);
+    const trace = page.locator('.timing-diagnostics').first().locator('.action-trace[data-action="share"]');
+    assert.match(await trace.innerText(), /Facebook xác nhận\n≈ 17,3 giây từ lúc đăng/);
+    assert.match(await trace.innerText(), /Tool xác minh xong\n≈ 18,3 giây từ lúc đăng/);
+    assert.match(await trace.innerText(), /Từ phản hồi Facebook đến xác minh xong: 1 giây/);
+    assert.equal(await trace.locator('.trace-table tbody tr').count(), 3);
+    assert.equal(await trace.locator('.trace-longest').count(), 1);
+    assert.match(await trace.locator('.trace-longest').innerText(), /Chờ và đọc phản hồi Facebook/);
+    const acknowledgement = await page.evaluate(input => {
+      const job: any = structuredClone(input), comment = job.actions.find((a: any) => a.name === 'comment');
+      comment.timing.trace.milestones.serverAcknowledged = comment.timing.trace.milestones.serverConfirmed;
+      delete comment.timing.trace.milestones.serverConfirmed;
+      const view = (window as any).renderActionTrace('comment', (window as any).timingForJob(job));
+      return view.querySelector('.trace-milestones').textContent;
+    }, complete);
+    assert.match(acknowledgement, /Facebook phản hồi · cần kiểm tra/);
+    assert.doesNotMatch(acknowledgement, /Facebook xác nhận/);
+    const unverified = await page.evaluate(input => {
+      const job: any = structuredClone(input); job.actions.find((a: any) => a.name === 'share').state = 'unknown';
+      return (window as any).renderActionTrace('share', (window as any).timingForJob(job)).querySelector('.trace-milestones').textContent;
+    }, complete);
+    assert.match(unverified, /Tool xác minh xong—/);
+    await page.evaluate(() => (window as any).refresh());
+    assert.equal(await page.locator('.timing-diagnostics').first().getAttribute('open'), '');
+    assert.match(await page.locator('.timing-diagnostics').nth(6).textContent() || '', /chưa có dữ liệu đo từng bước/);
+    await trace.screenshot({ path: 'data/timing-steps-preview.png' });
     assert.equal(await page.evaluate(() => (window as any).secondsText(244)), '4 phút 4 giây');
     await page.screenshot({ path: 'data/timing-preview.png', fullPage: true });
     await page.locator('#timing-tab').focus(); await page.keyboard.press('ArrowLeft');

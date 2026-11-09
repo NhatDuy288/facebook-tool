@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Facebook Laptop Tool</title><link rel="stylesheet" href="/style.css"></head>
+<title>Facebook Tool</title><link rel="stylesheet" href="/style.css"></head>
 <body><div class="shell">
-<header><div class="brand"><span class="brand-icon">F</span><div><strong>Facebook Laptop Tool</strong><span class="muted">Theo dõi và tương tác · Chạy trên laptop</span></div></div>
+<header><div class="brand"><span class="brand-icon">F</span><div><strong>Facebook Tool</strong><span class="muted">Theo dõi và tương tác</span></div></div>
 <div class="header-actions"><span id="phase" class="pill">Đang kết nối</span><button id="login" class="secondary">Mở Facebook / Đăng nhập</button><button id="shutdown" class="quiet">Đóng tool</button></div></header>
 <div id="toast" role="alert" hidden></div>
 <nav class="view-tabs" role="tablist" aria-label="Màn hình tool">
@@ -36,7 +36,7 @@
 <section id="timing-panel" class="card timing-panel" role="tabpanel" aria-labelledby="timing-tab" hidden>
 <div class="section-title"><div><h1>Thời gian từng bài</h1><p class="muted">Đo tốc độ phát hiện và hoàn tất, tính từ lúc bài được đăng trên Facebook.</p></div><span id="timing-count" class="pill neutral">0 bài</span></div>
 <div class="timing-help"><p><strong>Bảng chính: từ lúc đăng bài → từng mốc.</strong> Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.</p><p><strong>Chi tiết bên dưới: thời gian tool đọc, chờ và xử lý.</strong> Ví dụ: phát hiện sau 3 giây, Like mất 7 giây → Like xong khoảng 10 giây từ lúc đăng, nếu không phải chờ hàng đợi.</p></div>
-<p class="timing-legend small"><strong>≈</strong> là ước tính đã hiệu chỉnh lệch giờ máy với Facebook. <strong>±</strong> là sai số của phép đo. Từ 60 giây trở lên hiển thị phút và giây.</p>
+<p class="timing-legend small"><strong>≈</strong> là ước tính đã hiệu chỉnh lệch giờ máy với Facebook. Từ 60 giây trở lên hiển thị phút và giây.</p>
 <div class="table-scroll"><table class="timing-table"><thead><tr><th>Bài viết / nguồn</th><th>Thời gian up bài</th><th>Phát hiện<br><span class="timing-header-note">từ lúc đăng</span></th><th>Like xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Share xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Comment xong<br><span class="timing-header-note">từ lúc đăng</span></th><th>Hoàn thành<br><span class="timing-header-note">từ lúc đăng</span></th></tr></thead><tbody id="timing-rows"><tr><td colspan="7" class="empty">Chưa có bài được ghi nhận.</td></tr></tbody></table></div>
 <p class="muted small">Hiển thị 60 lượt xử lý gần nhất, tự cập nhật khi tool chạy. Lượt cũ thiếu dữ liệu đo sẽ để trống thời gian từ lúc đăng. Thử bài có sẵn chỉ đo từ lúc bấm thử; chế độ chia sẻ Chỉ mình tôi vẫn có thể theo dõi bài mới. Thao tác đã có từ trước, đối soát hoặc xác nhận thủ công không có mốc hoàn tất để đo.</p>
 </section>

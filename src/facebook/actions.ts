@@ -61,7 +61,7 @@ class MutationObserver {
   page: Page; action: ActionName; job: Job;
   armed = false; result: ConfirmedResult | null = null; failed = false; listener: (response: Response) => void;
   safeResponses: unknown[] = [];
-  constructor(page: Page, action: ActionName, job: Job) {
+  constructor(page: Page, action: ActionName, job: Job, onServerResponse?: SubmitHooks['onServerResponse']) {
     this.page = page; this.action = action; this.job = job;
     this.listener = response => {
       if (!this.armed) return;
@@ -93,6 +93,7 @@ class MutationObserver {
           action === 'comment' && requestText === job.plan.comment && (!input?.actor_id || input.actor_id === job.accountId) });
         if (!this.result && action === 'comment' && records.some((r: any) => r?.data?.comment_create))
           this.result = { code: 'SERVER_ACK_REQUIRES_RECONCILIATION' };
+        if (this.result) onServerResponse?.(this.result.code === 'SERVER_ACK_REQUIRES_RECONCILIATION' ? 'acknowledged' : 'confirmed');
       })().catch(() => {});
     };
     page.on('response', this.listener);
@@ -131,15 +132,18 @@ export class FacebookActions implements ActionAdapter {
       }
       await route.continue();
     };
-    this.stages.set(name, 'navigate_original_post'); this.postIds.set(name, job.post.post_id);
+    const stage = (value: Parameters<NonNullable<SubmitHooks['onStage']>>[0]) => { this.stages.set(name, value); hooks.onStage?.(value); };
+    stage('navigate_original_post'); this.postIds.set(name, job.post.post_id);
     await page.goto(postUrl(job), { waitUntil: 'domcontentloaded', timeout: 30000 });
     hooks.signal.throwIfAborted();
+    stage('verify_original_post');
     await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
-    this.stages.set(name, 'find_original_scope');
+    stage('find_post_scope');
     const main = await postScope(page);
     await main.waitFor({ state: 'visible' });
     // Comments use Reply controls, so the original post's unique Comment button anchors its action bar.
     // A missing Share control must not prevent the independent Like/Comment workers from running.
+    stage('find_action_bar');
     const commentButton = await oneVisible(main.getByRole('button', { name: COMMENT }));
     let bar: Locator | null = null;
     for (let level = 1; level <= 10; level++) {
@@ -148,14 +152,14 @@ export class FacebookActions implements ActionAdapter {
       if (likeCount === 1 && await candidate.getByRole('button', { name: COMMENT }).count() === 1) { bar = candidate; break; }
     }
     if (!bar) throw Error('UI_UNSUPPORTED');
-    this.stages.set(name, 'original_action_bar_verified');
-    const observation = new MutationObserver(page, name, job);
+    const observation = new MutationObserver(page, name, job, hooks.onServerResponse);
     const send = async (control: Locator, keyboard = false) => {
+      stage('prepare_submission');
       hooks.signal.throwIfAborted(); await activeAccount(page, job.accountId);
       await page.route('https://www.facebook.com/api/graphql/', writeGuard);
-      hooks.beforeSubmit(); hooks.signal.throwIfAborted(); observation.armed = true; this.stages.set(name, 'submit_intent_saved');
+      hooks.beforeSubmit(); hooks.signal.throwIfAborted(); observation.armed = true; stage('submit');
       if (keyboard) await control.press('Enter'); else await control.click({ timeout: 8000 });
-      this.stages.set(name, 'waiting_server_confirmation');
+      stage('wait_server');
     };
     const confirmed = async () => {
       const result = await observation.confirmed(hooks.signal);
@@ -164,6 +168,7 @@ export class FacebookActions implements ActionAdapter {
     };
     try {
       if (name === 'like') {
+        stage('check_existing_reaction');
         const already = bar.getByRole('button', { name: LIKED });
         if (await already.count() === 1 && await already.isVisible()) return { code: 'ALREADY_LIKED' };
         const like = await oneVisible(bar.getByRole('button', { name: LIKE }));
@@ -175,42 +180,48 @@ export class FacebookActions implements ActionAdapter {
         await send(like);
         const result = await confirmed();
         hooks.onServerConfirmed?.(result);
+        stage('verify_like');
         const selected = bar.getByRole('button', { name: LIKED });
         if (!await selected.count() && await like.getAttribute('aria-pressed') !== 'true') throw Error('RESULT_UNCONFIRMED');
         return result;
       }
       if (name === 'comment') {
         if (!job.plan.comment) throw Error('CONFIG_INVALID');
+        stage('open_comment_editor');
         await (await oneVisible(bar.getByRole('button', { name: COMMENT }))).click();
         const editor = await oneVisible(main.locator('[role="textbox"][contenteditable="true"]').filter({ visible: true }));
+        stage('fill_comment');
         hooks.signal.throwIfAborted(); await editor.fill(job.plan.comment);
         await send(editor, true);
         let result = await confirmed();
         if (result.code === 'SERVER_ACK_REQUIRES_RECONCILIATION') {
-          this.stages.set(name, 'verify_published_comment');
-          const existing = await this.reconcile('comment', job, hooks.signal);
+          const existing = await this.reconcile('comment', job, hooks.signal, stage);
           if (!existing) throw Error('RESULT_UNCONFIRMED');
           result = { ...existing, code: 'SERVER_CONFIRMED_AND_READ_BACK' };
         }
         hooks.onServerConfirmed?.(result); return result;
       }
+      stage('open_share_composer');
       await (await oneVisible(bar.getByRole('button', { name: SHARE }))).click(); hooks.signal.throwIfAborted();
       this.shareBinding.set(page, job.id);
-      this.stages.set(name, 'find_share_composer');
       const editorMatch = page.getByRole('textbox', { name: /^(Hãy nói gì đó về nội dung này|Say something about this|Write something)/i });
       const dialog = page.locator('[role="dialog"]:not(:has([role="dialog"]))').filter({ has: editorMatch });
       let composer: Locator;
       try { composer = await oneVisible(dialog, 4000); }
       catch {
+        stage('share_menu_fallback');
         const feed = await oneVisible(page.getByRole('menuitem', { name: /^(Chia sẻ lên (?:Bảng feed|bảng tin|trang cá nhân)|Viết bài|Share to (?:Feed|your timeline)|Write post)$/i }), 2500);
         await feed.click();
         composer = await oneVisible(dialog, 6000);
       }
-      this.stages.set(name, 'verify_share_destination');
+      stage('verify_share_destination');
       await this.verifyShareDestination(page, composer, job);
+      stage('set_share_audience');
       await this.setAudience(page, composer, job.plan.audience, hooks.signal);
+      stage('fill_share');
       const editor = await oneVisible(composer.locator('[contenteditable="true"][role="textbox"]'));
       await editor.fill(job.plan.share); hooks.signal.throwIfAborted();
+      stage('verify_share_before_submit');
       await this.assertAudience(composer, job.plan.audience);
       await this.verifyShareDestination(page, composer, job);
       const submit = await oneVisible(composer.getByRole('button', { name: /^(Chia sẻ ngay|Chia sẻ|Đăng|Share now|Share|Post)$/i }));
@@ -220,9 +231,11 @@ export class FacebookActions implements ActionAdapter {
       if (!result.externalId || !result.externalUrl) throw Error('RESULT_UNCONFIRMED');
       // Verify the audience on the resulting own post, not only on the composer.
       hooks.signal.throwIfAborted();
+      stage('share_readback_navigate');
       await page.goto(result.externalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      stage('share_readback_verify');
       await verifyPost(page, result.externalId, job.accountId, job.accountId);
-      await this.assertPublishedAudience(page, result.externalId, result.externalUrl, job.plan.audience);
+      await this.assertPublishedAudience(page, result.externalId, result.externalUrl, job.plan.audience, stage);
       return result;
     } finally { this.lastMutations.set(name, observation.safeResponses); observation.close(); await page.unroute('https://www.facebook.com/api/graphql/', writeGuard).catch(() => {}); }
   }
@@ -255,8 +268,11 @@ export class FacebookActions implements ActionAdapter {
     if (await done.count()) await (await oneVisible(done)).click();
     signal.throwIfAborted(); await this.assertAudience(composer, audience);
   }
-  async assertPublishedAudience(page: Page, postId: string, permalink: string, audience: 'only_me' | 'public') {
-    const actual = await (await postScope(page)).evaluate((node, expected) => {
+  async assertPublishedAudience(page: Page, postId: string, permalink: string, audience: 'only_me' | 'public', onStage?: SubmitHooks['onStage']) {
+    onStage?.('share_readback_scope');
+    const scope = await postScope(page);
+    onStage?.('share_readback_audience');
+    const actual = await scope.evaluate((node, expected) => {
       // Only labels before the shared original's header belong to the newly published header.
       const links = [...node.querySelectorAll('a[href]')];
       const clean = (value: string) => { try { const u = new URL(value); return u.origin + u.pathname + '?story_fbid=' + u.searchParams.get('story_fbid') + '&id=' + u.searchParams.get('id'); } catch { return ''; } };
@@ -302,8 +318,9 @@ export class FacebookActions implements ActionAdapter {
   }
   async stop() { const pages = [...this.pages.values()]; this.pages.clear(); await Promise.allSettled(pages.map(page => page.close())); }
   async close() { await this.stop(); }
-  async reconcile(name: ActionName, job: Job, signal?: AbortSignal): Promise<ConfirmedResult | null> {
+  async reconcile(name: ActionName, job: Job, signal?: AbortSignal, onStage?: SubmitHooks['onStage']): Promise<ConfirmedResult | null> {
     signal?.throwIfAborted();
+    onStage?.('comment_readback_open_tab');
     const page = await this.session.newBackgroundPage();
     const abort = () => { void page.close().catch(() => {}); };
     signal?.addEventListener('abort', abort, { once: true });
@@ -317,8 +334,11 @@ export class FacebookActions implements ActionAdapter {
         await this.assertPublishedAudience(page, found.id, found.url, job.plan.audience);
         return { externalId: found.id, externalUrl: found.url };
       }
+      onStage?.('comment_readback_navigate');
       await page.goto(postUrl(job), { waitUntil: 'domcontentloaded', timeout: 30000 });
+      onStage?.('comment_readback_verify');
       await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
+      onStage?.('comment_readback_scope');
       const scope = await postScope(page);
       if (name === 'like') {
         const liked = scope.getByRole('button', { name: LIKED });
@@ -326,7 +346,9 @@ export class FacebookActions implements ActionAdapter {
         const like = scope.getByRole('button', { name: LIKE });
         return await like.count() === 1 && await like.getAttribute('aria-pressed') === 'true' ? { code: 'ALREADY_LIKED' } : null;
       }
+      onStage?.('comment_readback_wait');
       await page.waitForTimeout(1500);
+      onStage?.('comment_readback_find');
       const matches = await scope.locator('[role="article"]').evaluateAll((nodes, expected) => {
         const found = new Map<string, string>();
         for (const node of nodes) {

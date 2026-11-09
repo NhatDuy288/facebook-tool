@@ -59,6 +59,8 @@ Bảng chính lấy **giờ đăng bài** làm mốc cho phát hiện, Like xong
 
 Mở **Chi tiết** để xem thời gian đọc, khoảng cách hai lượt đọc, chờ trước thao tác và xử lý riêng từng thao tác. Ví dụ: phát hiện sau 3 giây, chờ 1 giây, Like mất 7 giây thì Like xong khoảng 11 giây từ lúc đăng.
 
+Mở **Chi tiết** để xem từng bước của Like/Share/Comment: tải bài, xác minh, tìm nút, soạn, bấm gửi, chờ phản hồi và đọc lại kết quả. Mỗi bước có thời lượng riêng và mốc cộng dồn từ đầu nhánh; bước lâu nhất được tô đậm. Tách **Facebook xác nhận** với **Tool xác minh xong**. Phản hồi sơ bộ chưa đủ bằng chứng được ghi riêng, không coi là xác nhận thành công. Các mốc từ lúc đăng dùng hiệu chỉnh giờ Facebook; bài thử có sẵn tính từ lúc bấm thử. Số đo cập nhật trong bộ nhớ khi chạy và lưu cùng kết quả, không thêm thời gian chờ hay yêu cầu mạng. Lượt cũ chưa đo từng bước để trống.
+
 Khoảng chờ mặc định **5 giây bắt đầu sau khi lượt đọc trước kết thúc**; chu kỳ thực tế còn có thời gian đọc. Đây không phải cam kết phát hiện trong tối đa 5 giây. Phép đo từ giờ đăng là ước tính có sai số do mạng/độ chính xác giờ Facebook. Dữ liệu cũ hoặc thiếu hiệu chỉnh để trống.
 
 ## Dữ liệu riêng và chuyển máy
