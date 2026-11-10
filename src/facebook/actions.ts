@@ -5,6 +5,7 @@ import { ACTIONS, type ActionName } from '../config.ts';
 import type { Account, Job, ActionAdapter, SubmitHooks, ConfirmedResult } from '../types.ts';
 import { mutationConfirmation, mutationActorAllowed, safeFacebookUrl, commentRequestProof, mutationHasErrors } from './confirmation.ts';
 import { currentPageShareAudience } from './share-verification.ts';
+import { PostLoader, postReadyProbe, type LoadingOptions } from './post-loading.ts';
 import { parseRecords } from './feed/query-parser.mjs';
 const LIKE = /^(Thích|Like|Bày tỏ cảm xúc Thích về bài viết của .+|Like .+['’]s post)$/i;
 const LIKED = /^(Bỏ thích|Unlike|Đã thích|Liked|Gỡ lượt thích|Gỡ Thích khỏi bài viết của .+|Remove Like from .+['’]s post|(?:Gỡ|Xóa|Bỏ) cảm xúc Thích về bài viết của .+)$/i;
@@ -38,40 +39,10 @@ export function postUrl(job: Job): string {
 }
 export async function verifyPost(page: Page, postId: string, sourceId: string, actorId: string) {
   await activeAccount(page, actorId);
-  const accepted = await page.evaluate(({ postId, sourceId }) => {
-    let proof: { feedbackIds: string[] } | undefined;
-    const stack: any[] = []; let bytes = 0, visited = 0;
-    for (const script of document.querySelectorAll('script[type="application/json"],script[data-sjs]')) {
-      const text = script.textContent || ''; if (!text.includes(postId)) continue;
-      bytes += new TextEncoder().encode(text).byteLength;
-      if (bytes > 8 * 1024 * 1024) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
-      try { stack.push(JSON.parse(text)); } catch {}
-    }
-    while (stack.length) {
-      const node = stack.pop(); if (++visited > 200000) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
-      if (!node || typeof node !== 'object') continue;
-      if (node.__typename === 'Story' && node.post_id === postId) {
-        const owner = node.feedback?.owning_profile?.id, author = node.actors?.[0]?.id;
-        if (owner && owner !== sourceId || author && author !== sourceId) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
-        if (owner === sourceId || author === sourceId) {
-          const ids = new Set<string>();
-          for (const view of [node, node.comet_sections?.feedback?.story, node.comet_sections?.context_layout?.story]) {
-            if (!view) continue;
-            if (view !== node && (!(!!node.id && view.id === node.id || view.post_id === postId)
-              || view.id && node.id && view.id !== node.id || view.post_id && view.post_id !== postId)) continue;
-            if (view.feedback?.owning_profile?.id && view.feedback.owning_profile.id !== sourceId
-              || Array.isArray(view.actors) && view.actors.some((a: any) => a.id !== sourceId)) continue;
-            if (typeof view.feedback?.id === 'string' && view.feedback.id) ids.add(view.feedback.id);
-          }
-          proof = { feedbackIds: [...ids] }; break;
-        }
-      }
-      for (const child of Object.values(node)) if (child && typeof child === 'object') stack.push(child);
-    }
-    return proof || null;
-  }, { postId, sourceId });
-  if (!accepted || 'error' in accepted) throw Error('POST_UNVERIFIED');
-  return accepted;
+  const proof = await page.evaluate(postReadyProbe, { postId, sourceId, actorId, need: 'identity' as const });
+  if (!proof) throw Error('POST_UNVERIFIED');
+  if (proof.error) throw Error(proof.error);
+  return { feedbackIds: proof.feedbackIds };
 }
 
 class MutationObserver {
@@ -136,10 +107,13 @@ export class FacebookActions implements ActionAdapter {
   lastMutations = new Map<ActionName, unknown[]>();
   postIds = new Map<ActionName, string>();
   shareBinding = new WeakMap<Page, string>();
-  constructor(session: BrowserSession) { this.session = session; }
+  loader: PostLoader;
+  constructor(session: BrowserSession, loading: LoadingOptions = {}) { this.session = session; this.loader = new PostLoader(loading); }
   async prepare(account: Account) {
     this.account = account;
-    for (const name of ACTIONS) if (!this.pages.get(name) || this.pages.get(name)!.isClosed()) this.pages.set(name, await this.session.newBackgroundPage());
+    for (const name of ACTIONS) if (!this.pages.get(name) || this.pages.get(name)!.isClosed()) {
+      const page = await this.session.newBackgroundPage(); await this.loader.prepare(page); this.pages.set(name, page);
+    }
   }
   async execute(name: ActionName, job: Job, hooks: SubmitHooks): Promise<ConfirmedResult> {
     hooks.signal.throwIfAborted();
@@ -163,7 +137,7 @@ export class FacebookActions implements ActionAdapter {
     };
     const stage = (value: Parameters<NonNullable<SubmitHooks['onStage']>>[0]) => { this.stages.set(name, value); hooks.onStage?.(value); };
     stage('navigate_original_post'); this.postIds.set(name, job.post.post_id);
-    await page.goto(postUrl(job), { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await this.loader.load(page, postUrl(job), { postId: job.post.post_id, sourceId: job.sourceId, actorId: job.accountId, need: 'actions' }, hooks.signal);
     hooks.signal.throwIfAborted();
     stage('verify_original_post');
     const original = await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
@@ -270,7 +244,7 @@ export class FacebookActions implements ActionAdapter {
       }
       // Missing, conflicting or unexpected privacy evidence always uses the existing read-back.
       stage('share_readback_navigate');
-      await page.goto(result.externalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await this.loader.load(page, result.externalUrl, { postId: result.externalId, sourceId: job.accountId, actorId: job.accountId, need: 'published', permalink: result.externalUrl }, hooks.signal);
       stage('share_readback_verify');
       await verifyPost(page, result.externalId, job.accountId, job.accountId);
       await this.assertPublishedAudience(page, result.externalId, result.externalUrl, job.plan.audience, stage);
@@ -360,6 +334,7 @@ export class FacebookActions implements ActionAdapter {
     signal?.throwIfAborted();
     onStage?.('comment_readback_open_tab');
     const page = await this.session.newBackgroundPage();
+    await this.loader.prepare(page);
     const abort = () => { void page.close().catch(() => {}); };
     signal?.addEventListener('abort', abort, { once: true });
     try {
@@ -367,13 +342,13 @@ export class FacebookActions implements ActionAdapter {
       if (name === 'share') {
         const found = evidence?.externalId && evidence.externalUrl ? { id: evidence.externalId, url: evidence.externalUrl } : await this.findOwnShare(page, job);
         if (!found) return null;
-        await page.goto(found.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await this.loader.load(page, found.url, { postId: found.id, sourceId: job.accountId, actorId: job.accountId, need: 'published', permalink: found.url }, signal);
         await verifyPost(page, found.id, job.accountId, job.accountId);
         await this.assertPublishedAudience(page, found.id, found.url, job.plan.audience);
         return { externalId: found.id, externalUrl: found.url };
       }
       onStage?.('comment_readback_navigate');
-      await page.goto(postUrl(job), { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await this.loader.load(page, postUrl(job), { postId: job.post.post_id, sourceId: job.sourceId, actorId: job.accountId, need: 'post' }, signal);
       onStage?.('comment_readback_verify');
       await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
       onStage?.('comment_readback_scope');
@@ -385,9 +360,7 @@ export class FacebookActions implements ActionAdapter {
         return await like.count() === 1 && await like.getAttribute('aria-pressed') === 'true' ? { code: 'ALREADY_LIKED' } : null;
       }
       onStage?.('comment_readback_wait');
-      await page.waitForTimeout(1500);
-      onStage?.('comment_readback_find');
-      const matches = await scope.locator('[role="article"]').evaluateAll((nodes, expected) => {
+      const find = () => scope.locator('[role="article"]').evaluateAll((nodes, expected) => {
         const found = new Map<string, string>();
         for (const node of nodes) {
           const editable = [...node.querySelectorAll('[role="button"]')].some(n => /^(Chỉnh sửa hoặc xóa bình luận này|Edit or delete this comment)$/i.test(n.getAttribute('aria-label') || ''));
@@ -402,7 +375,18 @@ export class FacebookActions implements ActionAdapter {
         }
         return [...found].map(([id, url]) => ({ id, url }));
       }, { text: job.plan.comment, postUrl: postUrl(job) });
-      if (matches.length === 1 && job.accountId !== job.sourceId) return { externalId: matches[0].id, externalUrl: matches[0].url };
+      // Early page readiness can precede comment hydration. Wait for evidence, not
+      // a fixed sleep; ambiguity still fails and never causes another submission.
+      const deadline = performance.now() + 6000;
+      let matches = await find();
+      while (!matches.length && performance.now() < deadline) {
+        signal?.throwIfAborted(); await delay(100); matches = await find();
+      }
+      onStage?.('comment_readback_find');
+      if (matches.length === 1 && job.accountId !== job.sourceId) {
+        await activeAccount(page, job.accountId);
+        return { externalId: matches[0].id, externalUrl: matches[0].url };
+      }
       return null;
     } finally { signal?.removeEventListener('abort', abort); await page.close().catch(() => {}); }
   }
@@ -462,7 +446,7 @@ export class FacebookActions implements ActionAdapter {
           .slice(0, 60).map(n => ({ label: n.getAttribute('aria-label'), text: (n.textContent || '').slice(0, 100), pressed: n.getAttribute('aria-pressed') })),
         editors: [...document.querySelectorAll('[role="textbox"]')].filter(n => /^(Viết bình luận|Write a comment|Hãy nói gì đó|Say something)/i.test(n.getAttribute('aria-label') || '')).map(n => ({ label: n.getAttribute('aria-label'), editable: n.getAttribute('contenteditable') }))
       })).catch(() => ({ closed: true }));
-      result[name] = { ...(result[name] as any), stage: this.stages.get(name), mutations: this.lastMutations.get(name),
+      result[name] = { ...(result[name] as any), stage: this.stages.get(name), loading: this.loader.diagnostics(page), mutations: this.lastMutations.get(name),
         reaction: this.postIds.get(name) ? await this.reactionState(page, this.postIds.get(name)!).catch(() => 'unknown') : null };
     }
     return result;

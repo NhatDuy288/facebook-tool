@@ -11,20 +11,22 @@ import type { Reader } from '../types.ts';
 const accountScript = `<script>globalThis.require=name=>name==='CurrentUserInitialData'
   ?{USER_ID:'10',ACCOUNT_ID:'10',NAME:'Test'}:name==='getAsyncParams'?()=>({__user:'10'}):null</script>`;
 const ownUrl = 'https://www.facebook.com/example.account/posts/pfbidCreated40';
-function originalHtml(showSharedCard = false) {
+function originalHtml(showSharedCard = false, commentDelayMs = 0) {
   const card = `<div role="article"><div><a href="${ownUrl}"><time datetime="2026-11-09T10:00:00Z">Just now</time></a><span aria-label="Only me">Lock</span></div></div>`;
+  const comment = `<div role="article"><button role="button" aria-label="Edit or delete this comment">Edit</button><span dir="auto">test 1</span><a href="/permalink.php?story_fbid=30&id=20&comment_id=123456">Comment link</a></div>`;
   return accountScript + `<script type="application/json">{"__typename":"Story","post_id":"30","actors":[{"id":"20"}],"feedback":{"id":"feedback-original-30","owning_profile":{"id":"20"},"viewer_has_reacted":false}}</script>
   <div role="dialog"><h1>Bài viết của Source</h1><div>
   <button id="like" aria-pressed="false" onclick="send('FeedbackReactMutation',{}).then(()=>{this.textContent='Unlike';this.setAttribute('aria-pressed','true')})">Like</button>
   <button onclick="document.querySelector('#comment').hidden=false">Comment</button>
   <button onclick="document.querySelector('#composer').hidden=false">Share</button></div>
   <div id="comment" role="textbox" contenteditable="true" hidden></div>
-  <div role="article"><button role="button" aria-label="Edit or delete this comment">Edit</button><span dir="auto">test 1</span><a href="/permalink.php?story_fbid=30&id=20&comment_id=123456">Comment link</a></div>
+  <div id="comments">${commentDelayMs ? '' : comment}</div>
   </div>
   <div id="composer" role="dialog" hidden><button>Your Feed</button><span>Test</span><button>Only me</button>
   <div role="textbox" aria-label="Say something about this" contenteditable="true"></div>
   <button onclick="send('ComposerStoryCreateMutation',{message:{text:document.querySelector('#composer [role=textbox]').textContent}})">Post</button></div>
   <script>
+  ${commentDelayMs ? `setTimeout(()=>document.querySelector('#comments').innerHTML=${JSON.stringify(comment)},${commentDelayMs});` : ''}
   async function send(name,input){const result=await fetch('/api/graphql/',{method:'POST',body:new URLSearchParams({__user:'10',fb_api_req_friendly_name:name,variables:JSON.stringify({input:{actor_id:'10',...input}})})}).then(r=>r.json());
     ${showSharedCard ? "if(name==='ComposerStoryCreateMutation')document.body.insertAdjacentHTML('beforeend'," + JSON.stringify(card) + ');' : ''}
     return result;}
@@ -32,7 +34,7 @@ function originalHtml(showSharedCard = false) {
   </script>`;
 }
 
-async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public' }) {
+async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public'; commentDelayMs?: number }) {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: null });
   const session = new BrowserSession(); session.context = context; session.browser = browser;
@@ -61,7 +63,7 @@ async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 
     if (request.isNavigationRequest()) navigations.push(request.url());
     const shared = request.url() === ownUrl;
     const body = shared ? accountScript + `<script type="application/json">{"__typename":"Story","post_id":"40","actors":[{"id":"10"}]}</script>
-      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui');
+      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui', options.commentDelayMs);
     await route.fulfill({ contentType: 'text/html; charset=utf-8', body });
   });
   try {
@@ -99,13 +101,20 @@ test('real UI workers retain read-back when comment acknowledgement or share ide
     assert.equal(comment.code, 'SERVER_CONFIRMED_AND_READ_BACK');
     assert.equal(comment.timing!.trace!.milestones.serverConfirmed, undefined);
     assert.equal(typeof comment.timing!.trace!.milestones.serverAcknowledged, 'number');
-    assert.ok(comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait' && step.endMs - step.startMs >= 1400));
+    assert.ok(comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait'));
     const share = result.actions.find(action => action.name === 'share')!;
     assert.equal(share.externalId, '40');
     assert.ok(share.timing!.trace!.milestones.serverConfirmed! < share.timing!.trace!.finishedMs!);
     assert.ok(share.timing!.trace!.steps.some(step => step.stage === 'share_readback_audience'));
     assert.equal(navigations.filter(url => url === ownUrl).length, 1);
     assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 4, 'three workers plus comment read-back');
+});
+
+test('comment read-back waits for delayed exact evidence after early page readiness without resubmitting', { timeout: 30_000 }, async () => {
+  const { result } = await runWorkers({ comment: 'ack', share: 'response', commentDelayMs: 2200 });
+  const comment = result.actions.find(a => a.name === 'comment')!;
+  assert.equal(comment.code, 'SERVER_CONFIRMED_AND_READ_BACK');
+  assert.ok(comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait' && step.endMs - step.startMs >= 1500));
 });
 
 test('bound singular-edge comments and complete share responses avoid both read-back navigations', { timeout: 30_000 }, async () => {

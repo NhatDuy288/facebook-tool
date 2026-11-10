@@ -55,6 +55,10 @@ Like và Comment nằm trên bài gốc nên quyền xem phụ thuộc bài đó
 
 Comment hỗ trợ phản hồi `feedback_comment_edge` và chỉ xác nhận nhanh khi mã phản hồi được gắn với đúng tài khoản, nội dung và mã bài đích của yêu cầu. Share ưu tiên bằng chứng của bài vừa tạo trong phản hồi hoặc thẻ bài đã hiển thị; không lấy quyền riêng tư từ hộp soạn hay bài gốc đính kèm. Thiếu hoặc mâu thuẫn bằng chứng vẫn đọc lại kết quả, không tự gửi lại.
 
+Các tab thao tác và đọc lại giảm ảnh/video nội dung, giữ cache script/CSS/icon và chờ đúng dữ liệu/nút cần dùng. Bộ lọc dùng CDP; không dùng `page.route` để chặn media vì routing tắt HTTP cache. Nếu trang không sẵn sàng khi lọc, tool thử lại không lọc trước khi thao tác. Bộ đọc nguồn không đổi. Chạy `node scripts/benchmark-loading.ts` để so sánh bốn phương án trên HTTP cục bộ; báo cáo nằm trong `data/loading-local-benchmark.json`, không phải cam kết tốc độ Facebook thật.
+
+Comment cần đọc lại sẽ chờ đúng bằng chứng tối đa 6 giây, kết thúc sớm khi tìm thấy; không ngủ cố định 1,5 giây. Thiếu hoặc mơ hồ bằng chứng vẫn để chưa xác nhận và không gửi lại.
+
 ## Đọc số đo thời gian
 
 Bảng chính lấy **giờ đăng bài** làm mốc cho phát hiện, Like xong, Share xong, Comment xong. Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.

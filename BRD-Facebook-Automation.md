@@ -31,6 +31,8 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 
 - Lưu công việc/nội dung và trạng thái ý định gửi vào SQLite trước khi gửi. Ba nhánh chạy song song trên tab riêng, kết quả độc lập.
 - Xác minh đúng bài gốc và tài khoản. Share nguyên bản về trang cá nhân, kiểm tra đối tượng xem và bài đích trước/sau gửi; không tự thay đổi cảm xúc đã tồn tại.
+- Các tab thao tác/đọc lại chỉ chặn CDN ảnh/video nội dung qua CDP, giữ cache script/CSS/icon. Chờ dữ liệu đúng bài/tài khoản và nút cần dùng thay vì toàn bộ DOMContentLoaded; vẫn xác minh lại trước gửi. Nếu lọc media làm trang không sẵn sàng, tải lại không lọc trước khi thao tác. Không dùng route để lọc tài nguyên; route kiểm tra gửi chỉ tồn tại lúc gửi.
+- Comment đọc lại chờ bằng chứng khớp nội dung/quyền sửa và liên kết bình luận, tối đa 6 giây thay vì ngủ cố định. Không có/mơ hồ bằng chứng thì chưa xác nhận, không gửi lại.
 - Comment xác nhận nhanh từ phản hồi dạng đơn/mảng khi khớp tài khoản, nội dung và bài đích. Share chỉ bỏ tải lại khi đủ bằng chứng bài mới/bài gốc/quyền riêng tư từ phản hồi hoặc thẻ bài đã đăng; thiếu/mâu thuẫn vẫn đọc lại.
 - Chỉ đánh dấu thành công khi có bằng chứng kết quả. Kết quả chưa rõ không tự gửi lại; đối soát chỉ đọc, hoặc người vận hành xác nhận thủ công.
 - Khôi phục phân biệt chưa gửi, đang chuẩn bị và đã bắt đầu gửi. Thành công giữ nguyên; sau gián đoạn, phần có thể đã gửi chuyển trạng thái cần đối soát.
