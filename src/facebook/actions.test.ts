@@ -10,9 +10,10 @@ import type { Reader } from '../types.ts';
 
 const accountScript = `<script>globalThis.require=name=>name==='CurrentUserInitialData'
   ?{USER_ID:'10',ACCOUNT_ID:'10',NAME:'Test'}:name==='getAsyncParams'?()=>({__user:'10'}):null</script>`;
-const ownUrl = 'https://www.facebook.com/permalink.php?story_fbid=40&id=10';
-function originalHtml() {
-  return accountScript + `<script type="application/json">{"__typename":"Story","post_id":"30","actors":[{"id":"20"}],"feedback":{"owning_profile":{"id":"20"},"viewer_has_reacted":false}}</script>
+const ownUrl = 'https://www.facebook.com/example.account/posts/pfbidCreated40';
+function originalHtml(showSharedCard = false) {
+  const card = `<div role="article"><div><a href="${ownUrl}"><time datetime="2026-11-09T10:00:00Z">Just now</time></a><span aria-label="Only me">Lock</span></div></div>`;
+  return accountScript + `<script type="application/json">{"__typename":"Story","post_id":"30","actors":[{"id":"20"}],"feedback":{"id":"feedback-original-30","owning_profile":{"id":"20"},"viewer_has_reacted":false}}</script>
   <div role="dialog"><h1>Bài viết của Source</h1><div>
   <button id="like" aria-pressed="false" onclick="send('FeedbackReactMutation',{}).then(()=>{this.textContent='Unlike';this.setAttribute('aria-pressed','true')})">Like</button>
   <button onclick="document.querySelector('#comment').hidden=false">Comment</button>
@@ -24,12 +25,14 @@ function originalHtml() {
   <div role="textbox" aria-label="Say something about this" contenteditable="true"></div>
   <button onclick="send('ComposerStoryCreateMutation',{message:{text:document.querySelector('#composer [role=textbox]').textContent}})">Post</button></div>
   <script>
-  async function send(name,input){return fetch('/api/graphql/',{method:'POST',body:new URLSearchParams({__user:'10',fb_api_req_friendly_name:name,variables:JSON.stringify({input:{actor_id:'10',...input}})})}).then(r=>r.json())}
-  document.querySelector('#comment').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();send('CommentCreateMutation',{message:{text:e.currentTarget.textContent}})}};
+  async function send(name,input){const result=await fetch('/api/graphql/',{method:'POST',body:new URLSearchParams({__user:'10',fb_api_req_friendly_name:name,variables:JSON.stringify({input:{actor_id:'10',...input}})})}).then(r=>r.json());
+    ${showSharedCard ? "if(name==='ComposerStoryCreateMutation')document.body.insertAdjacentHTML('beforeend'," + JSON.stringify(card) + ');' : ''}
+    return result;}
+  document.querySelector('#comment').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();send('CommentCreateMutation',{feedback_id:'feedback-original-30',message:{text:e.currentTarget.textContent}})}};
   </script>`;
 }
 
-test('real UI workers record server proof before read-back, including the comment acknowledgement fallback', { timeout: 30_000 }, async () => {
+async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public' }) {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: null });
   const session = new BrowserSession(); session.context = context; session.browser = browser;
@@ -45,16 +48,20 @@ test('real UI workers record server proof before read-back, including the commen
       const form = new URLSearchParams(request.postData() || ''), name = form.get('fb_api_req_friendly_name')!;
       writes.push(name);
       if (name === 'FeedbackReactMutation') return route.fulfill({ json: { data: { feedback_react: { feedback: { id: 'feedback-30', viewer_has_reacted: true } } } } });
-      if (name === 'CommentCreateMutation') return route.fulfill({ json: { data: { comment_create: {} } } });
+      if (name === 'CommentCreateMutation') return route.fulfill({ json: { data: { comment_create: options.comment === 'ack' ? {} : {
+        feedback: { id: 'feedback-original-30' }, feedback_comment_edge: { node: { __typename: 'Comment', id: 'server_comment_100' } },
+      } } } });
       if (name === 'ComposerStoryCreateMutation') return route.fulfill({ json: { data: { story_create: { story: {
         __typename: 'Story', post_id: '40', actors: [{ id: '10' }], message: { text: 'test\n#test' }, url: ownUrl,
+        ...(options.share === 'legacy' ? {} : { attached_story: { post_id: '30', actors: [{ id: '20' }] } }),
+        ...(options.share === 'response' ? { privacy_scope: { type: 'ONLY_ME' } } : options.share === 'wrong' ? { privacy_scope: { type: 'PUBLIC' } } : {}),
       } } } } });
       throw Error('Unexpected mock mutation');
     }
     if (request.isNavigationRequest()) navigations.push(request.url());
-    const shared = url.searchParams.get('story_fbid') === '40';
+    const shared = request.url() === ownUrl;
     const body = shared ? accountScript + `<script type="application/json">{"__typename":"Story","post_id":"40","actors":[{"id":"10"}]}</script>
-      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="Only me"></span></div></div>` : originalHtml();
+      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui');
     await route.fulfill({ contentType: 'text/html; charset=utf-8', body });
   });
   try {
@@ -80,8 +87,14 @@ test('real UI workers record server proof before read-back, including the commen
     const job = store.testJob('10', '20', id, { post_id: '30', creation_time: 110, permalink: null, sourceVerification: 'owner' }, store.config());
     await Promise.all(ACTIONS.map(name => engine.perform(name, job, new AbortController().signal)));
     const result = store.job(job.id)!;
-    assert.ok(result.actions.every(action => action.state === 'succeeded'), JSON.stringify(result.actions));
+    if (!options.publishedAudience) assert.ok(result.actions.every(action => action.state === 'succeeded'), JSON.stringify(result.actions));
     assert.equal(writes.length, 3, 'read-back must not submit another interaction');
+    return { result, navigations };
+  } finally { await engine.close(); store.close(); await browser.close(); }
+}
+
+test('real UI workers retain read-back when comment acknowledgement or share identity is incomplete', { timeout: 30_000 }, async () => {
+    const { result, navigations } = await runWorkers({ comment: 'ack', share: 'legacy' });
     const comment = result.actions.find(action => action.name === 'comment')!;
     assert.equal(comment.code, 'SERVER_CONFIRMED_AND_READ_BACK');
     assert.equal(comment.timing!.trace!.milestones.serverConfirmed, undefined);
@@ -93,5 +106,43 @@ test('real UI workers record server proof before read-back, including the commen
     assert.ok(share.timing!.trace!.steps.some(step => step.stage === 'share_readback_audience'));
     assert.equal(navigations.filter(url => url === ownUrl).length, 1);
     assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 4, 'three workers plus comment read-back');
-  } finally { await engine.close(); store.close(); await browser.close(); }
+});
+
+test('bound singular-edge comments and complete share responses avoid both read-back navigations', { timeout: 30_000 }, async () => {
+  const { result, navigations } = await runWorkers({ comment: 'edge', share: 'response' });
+  const comment = result.actions.find(a => a.name === 'comment')!, share = result.actions.find(a => a.name === 'share')!;
+  assert.equal(comment.code, 'SERVER_CONFIRMED');
+  assert.equal(typeof comment.timing!.trace!.milestones.serverConfirmed, 'number');
+  assert.ok(!comment.timing!.trace!.steps.some(s => s.stage.startsWith('comment_readback')));
+  assert.equal(share.code, 'SERVER_CONFIRMED_RESPONSE_VERIFIED');
+  assert.ok(!share.timing!.trace!.steps.some(s => s.stage.startsWith('share_readback')));
+  assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 3);
+  assert.equal(navigations.filter(url => url === ownUrl).length, 0);
+});
+
+test('share privacy may be verified from its own published card without navigating', { timeout: 30_000 }, async () => {
+  const { result, navigations } = await runWorkers({ comment: 'edge', share: 'ui' });
+  const share = result.actions.find(a => a.name === 'share')!;
+  assert.equal(share.code, 'SERVER_CONFIRMED_UI_VERIFIED');
+  assert.ok(share.timing!.trace!.steps.some(s => s.stage === 'share_verify_current_page'));
+  assert.ok(!share.timing!.trace!.steps.some(s => s.stage.startsWith('share_readback')));
+  assert.equal(navigations.filter(url => url === ownUrl).length, 0);
+});
+
+test('missing or contradictory share privacy still navigates to verify the result', { timeout: 30_000 }, async () => {
+  for (const shareMode of ['missing', 'wrong'] as const) {
+    const { result, navigations } = await runWorkers({ comment: 'edge', share: shareMode });
+    const share = result.actions.find(a => a.name === 'share')!;
+    assert.equal(share.code, 'SERVER_CONFIRMED_AND_READ_BACK');
+    assert.equal(navigations.filter(url => url === ownUrl).length, 1);
+  }
+});
+
+test('a published share with the wrong privacy never becomes verified success', { timeout: 30_000 }, async () => {
+  const { result, navigations } = await runWorkers({ comment: 'edge', share: 'wrong', publishedAudience: 'public' });
+  const share = result.actions.find(a => a.name === 'share')!;
+  assert.equal(share.state, 'unknown');
+  assert.equal(share.code, 'RESULT_UNCONFIRMED');
+  assert.equal(share.timing!.fromPublicationMs, null);
+  assert.equal(navigations.filter(url => url === ownUrl).length, 1);
 });

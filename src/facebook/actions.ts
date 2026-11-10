@@ -3,7 +3,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserSession, activeAccount } from './browser.ts';
 import { ACTIONS, type ActionName } from '../config.ts';
 import type { Account, Job, ActionAdapter, SubmitHooks, ConfirmedResult } from '../types.ts';
-import { mutationConfirmation, mutationActorAllowed, safeFacebookUrl } from './confirmation.ts';
+import { mutationConfirmation, mutationActorAllowed, safeFacebookUrl, commentRequestProof, mutationHasErrors } from './confirmation.ts';
+import { currentPageShareAudience } from './share-verification.ts';
 import { parseRecords } from './feed/query-parser.mjs';
 const LIKE = /^(Thích|Like|Bày tỏ cảm xúc Thích về bài viết của .+|Like .+['’]s post)$/i;
 const LIKED = /^(Bỏ thích|Unlike|Đã thích|Liked|Gỡ lượt thích|Gỡ Thích khỏi bài viết của .+|Remove Like from .+['’]s post|(?:Gỡ|Xóa|Bỏ) cảm xúc Thích về bài viết của .+)$/i;
@@ -38,30 +39,46 @@ export function postUrl(job: Job): string {
 export async function verifyPost(page: Page, postId: string, sourceId: string, actorId: string) {
   await activeAccount(page, actorId);
   const accepted = await page.evaluate(({ postId, sourceId }) => {
+    let proof: { feedbackIds: string[] } | undefined;
     const stack: any[] = []; let bytes = 0, visited = 0;
     for (const script of document.querySelectorAll('script[type="application/json"],script[data-sjs]')) {
       const text = script.textContent || ''; if (!text.includes(postId)) continue;
-      bytes += new TextEncoder().encode(text).byteLength; if (bytes > 8 * 1024 * 1024) return false;
+      bytes += new TextEncoder().encode(text).byteLength;
+      if (bytes > 8 * 1024 * 1024) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
       try { stack.push(JSON.parse(text)); } catch {}
     }
     while (stack.length) {
-      const node = stack.pop(); if (++visited > 200000) return false;
+      const node = stack.pop(); if (++visited > 200000) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
       if (!node || typeof node !== 'object') continue;
       if (node.__typename === 'Story' && node.post_id === postId) {
-        const owner = node.feedback?.owning_profile?.id, actor = node.actors?.[0]?.id;
-        if ((!owner || owner === sourceId) && (!actor || actor === sourceId) && (owner === sourceId || actor === sourceId)) return true;
+        const owner = node.feedback?.owning_profile?.id, author = node.actors?.[0]?.id;
+        if (owner && owner !== sourceId || author && author !== sourceId) return { feedbackIds: [], error: 'POST_UNVERIFIED' };
+        if (owner === sourceId || author === sourceId) {
+          const ids = new Set<string>();
+          for (const view of [node, node.comet_sections?.feedback?.story, node.comet_sections?.context_layout?.story]) {
+            if (!view) continue;
+            if (view !== node && (!(!!node.id && view.id === node.id || view.post_id === postId)
+              || view.id && node.id && view.id !== node.id || view.post_id && view.post_id !== postId)) continue;
+            if (view.feedback?.owning_profile?.id && view.feedback.owning_profile.id !== sourceId
+              || Array.isArray(view.actors) && view.actors.some((a: any) => a.id !== sourceId)) continue;
+            if (typeof view.feedback?.id === 'string' && view.feedback.id) ids.add(view.feedback.id);
+          }
+          proof = { feedbackIds: [...ids] }; break;
+        }
       }
       for (const child of Object.values(node)) if (child && typeof child === 'object') stack.push(child);
     }
-    return false;
+    return proof || null;
   }, { postId, sourceId });
-  if (!accepted) throw Error('POST_UNVERIFIED');
+  if (!accepted || 'error' in accepted) throw Error('POST_UNVERIFIED');
+  return accepted;
 }
+
 class MutationObserver {
   page: Page; action: ActionName; job: Job;
   armed = false; result: ConfirmedResult | null = null; failed = false; listener: (response: Response) => void;
   safeResponses: unknown[] = [];
-  constructor(page: Page, action: ActionName, job: Job, onServerResponse?: SubmitHooks['onServerResponse']) {
+  constructor(page: Page, action: ActionName, job: Job, feedbackIds: string[], onServerResponse?: SubmitHooks['onServerResponse']) {
     this.page = page; this.action = action; this.job = job;
     this.listener = response => {
       if (!this.armed) return;
@@ -84,15 +101,20 @@ class MutationObserver {
           if (['Comment', 'Story', 'Feedback'].includes(node.__typename)) nodes.push({ type: node.__typename, keys: Object.keys(node).slice(0, 30) });
           for (const child of Object.values(node)) if (child && typeof child === 'object') stack.push(child);
         }
-        this.safeResponses.push({ operation: name, status: response.status(), topKeys: records.map((r: any) => Object.keys(r?.data || {})), nodes,
-          ...(action === 'comment' ? { createKeys: records.map((r: any) => Object.keys(r?.data?.comment_create || {})) } : {}) });
-        if (records.some((r: any) => r?.error || r?.errors?.length)) { this.failed = true; return; }
-        const variables = JSON.parse(form.get('variables') || '{}'), input = variables.input;
-        const requestText = typeof input?.message === 'string' ? input.message : input?.message?.text;
-        this.result = mutationConfirmation(records, action, job, { commentTextAndActorVerified:
-          action === 'comment' && requestText === job.plan.comment && (!input?.actor_id || input.actor_id === job.accountId) });
+        const diagnostic: Record<string, unknown> = { operation: name, status: response.status(), topKeys: records.map((r: any) => Object.keys(r?.data || {})), nodes,
+          ...(action === 'comment' ? { createKeys: records.map((r: any) => Object.keys(r?.data?.comment_create || {})) } : {}),
+          ...(action === 'share' ? { createKeys: records.map((r: any) => Object.keys(r?.data?.story_create || {})),
+            privacyKeys: records.map((r: any) => Object.keys(r?.data?.story_create?.story?.privacy_scope || {})) } : {}) };
+        this.safeResponses.push(diagnostic);
+        if (mutationHasErrors(records)) { this.failed = true; return; }
+        const proof = commentRequestProof(form, job, feedbackIds);
+        if (action === 'comment') diagnostic.requestProof = { actorAndTextVerified: proof.commentTextAndActorVerified, targetVerified: proof.commentTargetVerified };
+        if (action === 'comment' && !proof.commentRequestCompatible) { this.failed = true; return; }
+        this.result = mutationConfirmation(records, action, job, proof);
         if (!this.result && action === 'comment' && records.some((r: any) => r?.data?.comment_create))
           this.result = { code: 'SERVER_ACK_REQUIRES_RECONCILIATION' };
+        diagnostic.confirmation = this.result?.code ?? 'unconfirmed';
+        if (this.result?.shareProof) diagnostic.shareProof = this.result.shareProof;
         if (this.result) onServerResponse?.(this.result.code === 'SERVER_ACK_REQUIRES_RECONCILIATION' ? 'acknowledged' : 'confirmed');
       })().catch(() => {});
     };
@@ -129,6 +151,13 @@ export class FacebookActions implements ActionAdapter {
       const request = route.request(), body = request.postData();
       if (request.method() === 'POST' && body) {
         if (!mutationActorAllowed(new URLSearchParams(body), job.accountId)) { await route.abort('blockedbyclient'); return; }
+        const form = new URLSearchParams(body);
+        if (name === 'comment' && /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i.test(form.get('fb_api_req_friendly_name') || '')) {
+          const proof = commentRequestProof(form, job, original.feedbackIds);
+          if (!proof.commentRequestCompatible) {
+            await route.abort('blockedbyclient'); return;
+          }
+        }
       }
       await route.continue();
     };
@@ -137,7 +166,7 @@ export class FacebookActions implements ActionAdapter {
     await page.goto(postUrl(job), { waitUntil: 'domcontentloaded', timeout: 30000 });
     hooks.signal.throwIfAborted();
     stage('verify_original_post');
-    await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
+    const original = await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
     stage('find_post_scope');
     const main = await postScope(page);
     await main.waitFor({ state: 'visible' });
@@ -152,7 +181,7 @@ export class FacebookActions implements ActionAdapter {
       if (likeCount === 1 && await candidate.getByRole('button', { name: COMMENT }).count() === 1) { bar = candidate; break; }
     }
     if (!bar) throw Error('UI_UNSUPPORTED');
-    const observation = new MutationObserver(page, name, job, hooks.onServerResponse);
+    const observation = new MutationObserver(page, name, job, original.feedbackIds, hooks.onServerResponse);
     const send = async (control: Locator, keyboard = false) => {
       stage('prepare_submission');
       hooks.signal.throwIfAborted(); await activeAccount(page, job.accountId);
@@ -229,14 +258,23 @@ export class FacebookActions implements ActionAdapter {
       const result = await confirmed();
       hooks.onServerConfirmed?.(result);
       if (!result.externalId || !result.externalUrl) throw Error('RESULT_UNCONFIRMED');
-      // Verify the audience on the resulting own post, not only on the composer.
       hooks.signal.throwIfAborted();
+      stage('share_verify_response');
+      if (result.shareProof?.identityVerified && result.shareProof.audience === job.plan.audience)
+        return { ...result, code: 'SERVER_CONFIRMED_RESPONSE_VERIFIED' };
+      if (result.shareProof?.identityVerified && result.shareProof.audience === null) {
+        stage('share_verify_current_page');
+        await activeAccount(page, job.accountId);
+        const audience = await currentPageShareAudience(page, result.externalId, job.accountId, result.externalUrl);
+        if (audience === job.plan.audience) return { ...result, code: 'SERVER_CONFIRMED_UI_VERIFIED' };
+      }
+      // Missing, conflicting or unexpected privacy evidence always uses the existing read-back.
       stage('share_readback_navigate');
       await page.goto(result.externalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       stage('share_readback_verify');
       await verifyPost(page, result.externalId, job.accountId, job.accountId);
       await this.assertPublishedAudience(page, result.externalId, result.externalUrl, job.plan.audience, stage);
-      return result;
+      return { ...result, code: 'SERVER_CONFIRMED_AND_READ_BACK' };
     } finally { this.lastMutations.set(name, observation.safeResponses); observation.close(); await page.unroute('https://www.facebook.com/api/graphql/', writeGuard).catch(() => {}); }
   }
   async verifyShareDestination(page: Page, dialog: Locator, job: Job) {

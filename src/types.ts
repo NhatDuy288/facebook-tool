@@ -24,7 +24,7 @@ export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_
   | 'verify_like' | 'comment_readback_open_tab' | 'comment_readback_navigate' | 'comment_readback_verify'
   | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
   | 'share_readback_navigate' | 'share_readback_verify' | 'share_readback_scope'
-  | 'share_readback_audience' | 'cleanup';
+  | 'share_readback_audience' | 'share_verify_response' | 'share_verify_current_page' | 'cleanup';
 export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed';
 export type ActionTraceStep = { stage: ActionStage; startMs: number; endMs: number; status: 'completed' | 'running' | 'interrupted' };
 export type ActionTraceData = { version: 1; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
@@ -41,7 +41,8 @@ export type Reader = { prepare(target: Config['target'], signal: AbortSignal): P
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
 export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
   onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
-export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string };
+export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string;
+  shareProof?: { identityVerified: boolean; audience: 'only_me' | 'public' | null } };
 export type ActionAdapter = { prepare(account: Account): Promise<void>;
   execute(name: ActionName, job: Job, hooks: SubmitHooks): Promise<ConfirmedResult>;
   release?: () => Promise<void>;

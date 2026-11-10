@@ -53,6 +53,8 @@ Like và Comment nằm trên bài gốc nên quyền xem phụ thuộc bài đó
 - **Lỗi trước khi gửi/Đã dừng:** có thể tiếp tục phần chưa gửi khi đúng tài khoản, nguồn và chế độ.
 - **Chưa rõ kết quả:** bấm **Đối soát với Facebook** hoặc kiểm tra thủ công trước khi xác nhận trạng thái và thử lại.
 
+Comment hỗ trợ phản hồi `feedback_comment_edge` và chỉ xác nhận nhanh khi mã phản hồi được gắn với đúng tài khoản, nội dung và mã bài đích của yêu cầu. Share ưu tiên bằng chứng của bài vừa tạo trong phản hồi hoặc thẻ bài đã hiển thị; không lấy quyền riêng tư từ hộp soạn hay bài gốc đính kèm. Thiếu hoặc mâu thuẫn bằng chứng vẫn đọc lại kết quả, không tự gửi lại.
+
 ## Đọc số đo thời gian
 
 Bảng chính lấy **giờ đăng bài** làm mốc cho phát hiện, Like xong, Share xong, Comment xong. Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.

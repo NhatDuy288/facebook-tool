@@ -31,6 +31,7 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 
 - Lưu công việc/nội dung và trạng thái ý định gửi vào SQLite trước khi gửi. Ba nhánh chạy song song trên tab riêng, kết quả độc lập.
 - Xác minh đúng bài gốc và tài khoản. Share nguyên bản về trang cá nhân, kiểm tra đối tượng xem và bài đích trước/sau gửi; không tự thay đổi cảm xúc đã tồn tại.
+- Comment xác nhận nhanh từ phản hồi dạng đơn/mảng khi khớp tài khoản, nội dung và bài đích. Share chỉ bỏ tải lại khi đủ bằng chứng bài mới/bài gốc/quyền riêng tư từ phản hồi hoặc thẻ bài đã đăng; thiếu/mâu thuẫn vẫn đọc lại.
 - Chỉ đánh dấu thành công khi có bằng chứng kết quả. Kết quả chưa rõ không tự gửi lại; đối soát chỉ đọc, hoặc người vận hành xác nhận thủ công.
 - Khôi phục phân biệt chưa gửi, đang chuẩn bị và đã bắt đầu gửi. Thành công giữ nguyên; sau gián đoạn, phần có thể đã gửi chuyển trạng thái cần đối soát.
 - Lịch sử chống trùng tồn tại qua khởi động lại và đổi cửa sổ 5 bài. Không xóa theo kỳ nhật ký; giao dịch lưu phải nguyên tử.
