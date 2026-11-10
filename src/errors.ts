@@ -10,7 +10,7 @@ const MESSAGES: Record<string, string> = {
   OBSERVED_QUERY_NOT_VERIFIED: 'Chưa thu được yêu cầu đọc danh sách hợp lệ từ trang nguồn. Kiểm tra Facebook rồi thử lại.',
   HEAD_QUERY_UNVERIFIED: 'Chưa xác minh được cấu trúc đọc danh sách. Không tiếp tục bằng dữ liệu đoán.',
   FRESH_PROTOCOL_UNAVAILABLE: 'Phiên đọc Facebook không còn hợp lệ. Mở Facebook và đăng nhập lại nếu cần.',
-  BASELINE_INCOMPLETE: 'Chưa đọc đủ 5 bài hợp lệ. Chưa bắt đầu theo dõi.',
+  BASELINE_INCOMPLETE: 'Chưa đọc đủ 3 bài hợp lệ. Chưa bắt đầu theo dõi.',
   UNUSABLE_WINDOW: 'Phản hồi danh sách chưa hợp lệ. Giữ nguyên danh sách thành công trước đó.',
   SERVER_TIME_REQUIRED: 'Không lấy được giờ Facebook để xác minh bài mới.',
   POST_TIME_INVALID: 'Thời gian bài không khớp giờ Facebook. Chưa tạo tương tác.',
@@ -30,7 +30,7 @@ const MESSAGES: Record<string, string> = {
   STOPPED: 'Đã dừng. Các thao tác chưa gửi sẽ không được gửi tiếp.',
   JOB_NOT_RETRYABLE: 'Chỉ tiếp tục thao tác chắc chắn chưa gửi; kết quả chưa rõ cần kiểm tra thủ công.',
   TEST_SOURCE_ONLY: 'Chức năng thử bài có sẵn chỉ áp dụng cho nguồn Nguồn thử nghiệm trong chế độ test.',
-  NO_BASELINE: 'Hãy lấy mốc 5 bài trước.',
+  NO_BASELINE: 'Hãy lấy mốc 3 bài trước.',
   DATABASE_FAILED: 'Không lưu được dữ liệu. Đã dừng để tránh mất trạng thái hoặc gửi trùng.',
 };
 export function errorCode(error: unknown): string {

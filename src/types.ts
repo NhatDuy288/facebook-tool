@@ -1,6 +1,7 @@
 import type { ActionName, Config, ContentPlan, Mode } from './config.ts';
 export type Post = { post_id: string; creation_time: number; permalink: string | null; sourceVerification: string };
-export type WindowRead = { posts: Post[]; usable: boolean; reasonCode: string | null; serverSeconds: number | null;
+export type WindowRead = { posts: Post[]; verifiedPosts?: Post[];
+  windowPolicy?: { requestedCount: number; verifiedCount: number; expanded: boolean; expansionReason: string | null }; usable: boolean; reasonCode: string | null; serverSeconds: number | null;
   firstSeenAt: string; queryPOSTsIssued: number; queryMs: number; decodedBodyBytes: number;
   observations?: Record<string, PostObservation>; readTiming?: ReadTiming };
 export type PostObservation = { observedAt: string; observedMonoMs?: number; publicationDelayMs: number | null;

@@ -1,5 +1,6 @@
 import type { ReadTarget } from './facebook/feed/read-target.ts';
 
+export const READ_WINDOW_SIZE = 3;
 export type Mode = 'dry-run' | 'test' | 'live';
 export type ActionName = 'like' | 'share' | 'comment';
 export const ACTIONS: ActionName[] = ['like', 'share', 'comment'];
@@ -9,7 +10,7 @@ export type Config = {
   actions: Record<ActionName, boolean>;
 };
 export const DEFAULT_CONFIG: Config = {
-  version: 1, target: 'test-profile', mode: 'dry-run', pollSeconds: 5, keepSession: true,
+  version: 1, target: 'test-profile', mode: 'dry-run', pollSeconds: 2, keepSession: true,
   comments: ['test 1', 'test 2', 'test 3', 'test 4'], shareText: 'test', hashtags: ['#test'],
   actions: { like: true, share: true, comment: true },
 };

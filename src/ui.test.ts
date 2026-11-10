@@ -37,6 +37,9 @@ test('source selection stays consistent across refresh, save and baseline/start 
       });
       await page.goto('http://tool.test/');
       await page.waitForFunction(() => document.getElementById('saved')?.textContent === 'Đã lưu');
+      assert.equal(await page.inputValue('#poll-seconds'), '2');
+      assert.equal(await page.locator('#window-count').innerText(), '0 / 3');
+      assert.equal(await page.locator('#baseline').innerText(), 'Lấy mốc 3 bài');
       await page.selectOption('#target', 'test-profile');
       assert.equal(await page.getAttribute('#source-url', 'href'), READ_TARGETS['test-profile'].url);
       await page.evaluate('refresh()');

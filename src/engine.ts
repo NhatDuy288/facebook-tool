@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
-import { ACTIONS, type Config, type ActionName } from './config.ts';
+import { ACTIONS, READ_WINDOW_SIZE, type Config, type ActionName } from './config.ts';
 import { READ_TARGETS } from './facebook/feed/read-target.ts';
 import { Store } from './store.ts';
 import { errorCode, message } from './errors.ts';
@@ -27,7 +27,7 @@ export class Engine {
     const observation = Object.values(this.lastRead?.observations ?? {})[0];
     return { phase: this.phase, note: this.note, config, account: this.account,
       source: READ_TARGETS[config.target], sessionId: this.sessionId, serverFloor: this.floor,
-      posts: this.window, nextComment: this.store.nextPlan().comment, lastReadAt: this.lastReadAt, nextReadAt: this.nextReadAt,
+      posts: this.window, windowSize: READ_WINDOW_SIZE, readWindow: this.lastRead?.windowPolicy ?? null, nextComment: this.store.nextPlan().comment, lastReadAt: this.lastReadAt, nextReadAt: this.nextReadAt,
       metrics: { reads: this.readCount, queries: this.queryCount, decodedBytes: this.bytesRead, lastQueryMs: this.lastRead?.queryMs ?? null,
         lastReadDurationMs: this.lastReadTiming?.durationMs ?? null, lastReadIntervalMs: this.lastReadTiming?.intervalMs ?? null,
         lastPollWaitMs: this.lastReadTiming?.waitMs ?? null,
@@ -60,7 +60,7 @@ export class Engine {
   }
   async initialize(): Promise<void> {
     this.abort = new AbortController(); const signal = this.abort.signal;
-    this.phase = 'initializing'; this.note = 'Đang xác minh tài khoản, chuẩn bị cách đọc nền và lấy mốc 5 bài…';
+    this.phase = 'initializing'; this.note = 'Đang xác minh tài khoản, chuẩn bị cách đọc nền và lấy mốc 3 bài…';
     this.sessionId = null; this.floor = null; this.window = []; this.lastRead = null; this.account = null;
     this.readCount = 0; this.queryCount = 0; this.bytesRead = 0; this.consecutiveErrors = 0;
     this.nextReadAt = null;
@@ -74,12 +74,12 @@ export class Engine {
     const second = await this.readChecked(signal); signal.throwIfAborted();
     this.floor = second.serverSeconds;
     if (this.floor === null) throw Error('SERVER_TIME_REQUIRED');
-    this.sessionId = this.store.baseline(this.account.id, READ_TARGETS[config.target].sourceId, this.floor, second.posts);
+    this.sessionId = this.store.baseline(this.account.id, READ_TARGETS[config.target].sourceId, this.floor, (second.verifiedPosts ?? second.posts));
     // Both baseline reads are ignored, even if a post enters between them.
-    for (const p of first.posts) this.store.recordSeen(this.account.id, READ_TARGETS[config.target].sourceId, p, this.sessionId, 'baseline');
+    for (const p of first.verifiedPosts ?? first.posts) this.store.recordSeen(this.account.id, READ_TARGETS[config.target].sourceId, p, this.sessionId, 'baseline');
     this.window = second.posts;
-    this.phase = 'ready'; this.note = 'Đã lấy mốc 5 bài. Các bài có sẵn được bỏ qua.';
-    this.store.log('info', 'BASELINE_READY', `Đã lấy mốc 5 bài cho ${config.target}; chưa gửi tương tác.`);
+    this.phase = 'ready'; this.note = 'Đã lấy mốc 3 bài. Các bài có sẵn được bỏ qua.';
+    this.store.log('info', 'BASELINE_READY', `Đã lấy mốc 3 bài cho ${config.target}; chưa gửi tương tác.`);
   }
   async run(): Promise<void> {
     await this.initialize();
@@ -94,7 +94,7 @@ export class Engine {
         const config = this.store.config();
         const requestedAt = new Date().toISOString(), requestedMono = performance.now();
         const timings: Record<string, JobTiming> = {};
-        for (const post of read.posts) {
+        for (const post of read.verifiedPosts ?? read.posts) {
           const observed = read.observations?.[post.post_id], trace = read.readTiming!;
           timings[post.post_id] = { version: 2, origin: 'watch', requestedAt,
             detectedAt: observed?.observedAt ?? trace.completedAt, publicationDelayMs: observed?.publicationDelayMs ?? null,
@@ -105,7 +105,7 @@ export class Engine {
         }
         const jobs = this.store.acceptWindow({ accountId: this.account!.id, sourceId: READ_TARGETS[config.target].sourceId,
           sessionId: this.sessionId!, floor: this.floor!, serverNow: read.serverSeconds!,
-          posts: read.posts, previous: new Set(this.window.map(p => p.post_id)), config, timings });
+          posts: read.verifiedPosts ?? read.posts, previous: new Set(this.window.map(p => p.post_id)), config, timings });
         this.window = read.posts; this.consecutiveErrors = 0; this.note = 'Đang theo dõi bài mới bằng đọc nền.';
         for (const job of jobs) {
           const observed = read.observations?.[job.post.post_id];
@@ -149,9 +149,13 @@ export class Engine {
     }
     read.readTiming = this.lastReadTiming!;
     this.readCount++; this.queryCount += read.queryPOSTsIssued; this.bytesRead += read.decodedBodyBytes;
-    if (!read.usable || read.posts.length !== 5 || new Set(read.posts.map(p => p.post_id)).size !== 5) throw Error('UNUSABLE_WINDOW');
+    const verified = read.verifiedPosts ?? read.posts;
+    if (!read.usable || read.posts.length !== READ_WINDOW_SIZE || ![READ_WINDOW_SIZE, 5].includes(verified.length)
+      || new Set(read.posts.map(p => p.post_id)).size !== READ_WINDOW_SIZE
+      || new Set(verified.map(p => p.post_id)).size !== verified.length
+      || read.posts.some(p => !verified.some(v => v.post_id === p.post_id && v.creation_time === p.creation_time && v.sourceVerification === p.sourceVerification))) throw Error('UNUSABLE_WINDOW');
     if (!Number.isSafeInteger(read.serverSeconds) || read.serverSeconds! < 1) throw Error('SERVER_TIME_REQUIRED');
-    if (read.posts.some(p => !/^\d+$/.test(p.post_id) || !Number.isSafeInteger(p.creation_time) || !p.sourceVerification)) throw Error('UNUSABLE_WINDOW');
+    if (verified.some(p => !/^\d+$/.test(p.post_id) || !Number.isSafeInteger(p.creation_time) || !p.sourceVerification)) throw Error('UNUSABLE_WINDOW');
     this.lastRead = read; this.lastReadAt = completedAt; return read;
   }
   testExisting(postId: string): string {

@@ -1,4 +1,5 @@
 // Reuse the verified, fail-closed parser/transport. Request templates and tokens stay in RAM.
+import { READ_WINDOW_SIZE } from '../config.ts';
 import type { Page, Response } from 'playwright-core';
 import { performance } from 'node:perf_hooks';
 import { BrowserSession, activeAccount } from './browser.ts';
@@ -94,8 +95,10 @@ export class FacebookReader implements Reader {
     await activeAccount(page, this.account.id);
     const started = performance.now(), form = await freshHead(page, template);
     signal.throwIfAborted();
-    const result = await readCompleteWindow(page, form, { target: this.target, observedTemplate: template, maxBatches: 2, signal });
-    return { posts: result.posts, usable: result.usable, reasonCode: result.reasonCode, serverSeconds: result.serverSeconds,
+    const result = await readCompleteWindow(page, form, { target: this.target, observedTemplate: template, maxBatches: 2, signal, windowSize: READ_WINDOW_SIZE, expandOnRisk: true });
+    return { posts: [...result.posts].sort((a, b) => b.creation_time - a.creation_time).slice(0, READ_WINDOW_SIZE),
+      verifiedPosts: result.posts, windowPolicy: { requestedCount: READ_WINDOW_SIZE, verifiedCount: result.posts.length,
+        expanded: result.windowSize > READ_WINDOW_SIZE, expansionReason: result.expansionReason }, usable: result.usable, reasonCode: result.reasonCode, serverSeconds: result.serverSeconds,
       firstSeenAt: result.firstSeenAt, observations: result.observations,
       queryPOSTsIssued: result.queryPOSTsIssued, queryMs: Math.round(performance.now() - started),
       decodedBodyBytes: result.batches.reduce((sum, b) => sum + b.decodedBodyBytes, 0) };
@@ -134,7 +137,7 @@ async function freshHead(page: Page, original: ObservedContinuation): Promise<UR
   if (!active.fb_dtsg || active.__user !== original.form.get('__user')) throw Error('FRESH_PROTOCOL_UNAVAILABLE');
   const form = new URLSearchParams(original.form);
   for (const [key, value] of Object.entries(active)) form.set(key, value);
-  form.set('variables', JSON.stringify({ ...original.variables, count: 5,
-    ...(Object.hasOwn(original.variables, 'stream_count') ? { stream_count: 5 } : {}), cursor: null }));
+  form.set('variables', JSON.stringify({ ...original.variables, count: READ_WINDOW_SIZE,
+    ...(Object.hasOwn(original.variables, 'stream_count') ? { stream_count: READ_WINDOW_SIZE } : {}), cursor: null }));
   return form;
 }

@@ -27,7 +27,8 @@ function markers(node) {
       const next = [...path, Array.isArray(value) ? Number(key) : key];
       if (/(?:^|_)(?:pinned|featured)(?:_|$)/i.test(key)) found.push({
         category: /pinned/i.test(key) ? 'pin_related_key' : 'featured_related_key', path: safePath(next),
-        valueKind: child === null ? 'null' : typeof child });
+        valueKind: child === null ? 'null' : typeof child,
+        ...(typeof child === 'boolean' ? { booleanValue: child } : {}) });
       if (child && typeof child === 'object') stack.push({ value: child, path: next, depth: depth + 1 });
     }
   }

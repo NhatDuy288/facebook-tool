@@ -1,4 +1,4 @@
-// Fill only the current five-post window. No offline recovery, sorting, raw cursor output or persistence.
+// Bounded source-bound window; a three-post head may expand to five on ordering/promotion evidence.
 import type { Page } from 'playwright-core';
 import { performance } from 'node:perf_hooks';
 import type { BrowserReadResponse } from './browser-read.ts';
@@ -27,9 +27,10 @@ export type SafeWindowBatch = { batchIndex: number; requestedCount: number; requ
 export type CompleteWindowResult = AuthWindowResult & { serverSeconds: number | null; firstSeenAt: string;
   observations: Record<string, PostObservation>;
   batches: SafeWindowBatch[]; queryPOSTsIssued: number; receivedOrderChronologicalDescending: boolean | null;
+  windowSize: 3 | 5; expansionReason: 'promotion_evidence' | 'non_chronological' | null;
   actualNewestFiveGuaranteed: false };
 export type CompleteWindowOptions = { observedTemplate?: ObservedContinuation; marker?: string;
-  maxBatches?: 1 | 2; signal?: AbortSignal; target?: ReadTarget };
+  maxBatches?: 1 | 2; signal?: AbortSignal; target?: ReadTarget; windowSize?: 3 | 5; expandOnRisk?: boolean };
 
 function responseServerMs(response: BrowserReadResponse): number | null {
   const date = response.headers().date;
@@ -61,7 +62,7 @@ function sourceBound(vars: Record<string, unknown>, sourceId: ReadSourceId = SOU
     typeof value === 'string' && /^\d+$/.test(value) || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0).map(String);
   return ids.includes(sourceId) && ids.every(id => id === sourceId);
 }
-function verifyHead(form: URLSearchParams, observed: ObservedContinuation | null, sourceId: ReadSourceId = SOURCE_ID): Record<string, unknown> {
+function verifyHead(form: URLSearchParams, observed: ObservedContinuation | null, sourceId: ReadSourceId = SOURCE_ID, windowSize: 3 | 5 = 5): Record<string, unknown> {
   const fail = (): never => { throw Error('HEAD_QUERY_UNVERIFIED'); };
   if (!observed?.responseVerified || !observed.authenticated || !observed.artifact?.operationMatched
     || !observed.artifact.headCursorNullAllowed || observed.artifact.cursorArgumentName !== 'cursor'
@@ -80,9 +81,9 @@ function verifyHead(form: URLSearchParams, observed: ObservedContinuation | null
       || !/^\d+$/.test(form.get('doc_id') || '') || form.get('doc_id') !== observed!.form.get('doc_id')
       || form.get('fb_api_req_friendly_name') !== observed!.friendlyName
       || !/^[1-9]\d*$/.test(form.get('__user') || '') || form.get('__user') !== observed!.form.get('__user') || !form.get('fb_dtsg')
-      || !object(vars) || !sourceBound(vars, sourceId) || vars.count !== 5 || vars.cursor !== null) fail();
-    const expected = { ...observed!.variables, count: 5,
-      ...(Object.hasOwn(observed!.variables, 'stream_count') ? { stream_count: 5 } : {}), cursor: null };
+      || !object(vars) || !sourceBound(vars, sourceId) || vars.count !== windowSize || vars.cursor !== null) fail();
+    const expected = { ...observed!.variables, count: windowSize,
+      ...(Object.hasOwn(observed!.variables, 'stream_count') ? { stream_count: windowSize } : {}), cursor: null };
     if (JSON.stringify(vars) !== JSON.stringify(expected)) fail();
     return vars as Record<string, unknown>;
   } catch { return fail(); }
@@ -118,8 +119,8 @@ export function scopedPageInfo(records: any[], sourceId: ReadSourceId = SOURCE_I
     endCursor: usable && cursors.size === 1 ? [...cursors][0] : null };
 }
 export function makeContinuationReadForm(headForm: URLSearchParams, observed: ObservedContinuation,
-  actualEndCursor: string, remaining: number, sourceId: ReadSourceId = SOURCE_ID): URLSearchParams {
-  const vars = verifyHead(headForm, observed, sourceId);
+  actualEndCursor: string, remaining: number, sourceId: ReadSourceId = SOURCE_ID, windowSize: 3 | 5 = 5): URLSearchParams {
+  const vars = verifyHead(headForm, observed, sourceId, windowSize);
   if (typeof actualEndCursor !== 'string' || !actualEndCursor || !Number.isSafeInteger(remaining) || remaining < 1 || remaining > 4)
     throw Error('BASELINE_INCOMPLETE');
   const form = new URLSearchParams(headForm);
@@ -131,18 +132,22 @@ export function makeContinuationReadForm(headForm: URLSearchParams, observed: Ob
 export async function readCompleteWindow(page: Page, headForm: URLSearchParams,
   options: CompleteWindowOptions = {}): Promise<CompleteWindowResult> {
   const maxBatches = options.maxBatches ?? 2;
+  const requestedSize = options.windowSize ?? 5;
+  if (![3, 5].includes(requestedSize)) throw Error('QUERY_BUDGET');
+  let windowSize: 3 | 5 = requestedSize;
+  let expansionReason: CompleteWindowResult['expansionReason'] = null;
   const target = options.target ?? 'test-profile', sourceId = READ_TARGETS[target].sourceId;
   if (![1, 2].includes(maxBatches)) throw Error('QUERY_BUDGET');
   if (!matchesReadTargetUrl(page.url(), target)) throw Error('SOURCE_PAGE_UNAVAILABLE');
   const observed = options.observedTemplate ?? (target === 'test-profile' ? getObservedContinuation() : null);
-  verifyHead(headForm, observed, sourceId);
+  verifyHead(headForm, observed, sourceId, requestedSize);
   const posts: AuthPost[] = [], batches: SafeWindowBatch[] = [], ids = new Set<string>(), markers = new Set<string>();
   const observations: Record<string, PostObservation> = {};
   let form = new URLSearchParams(headForm), serverSeconds: number | null = null, queryPOSTsIssued = 0;
   let verifiedAt = new Date(Date.now()).toISOString();
   const finish = (reasonCode: string | null): CompleteWindowResult => ({ posts, usable: reasonCode === null, reasonCode,
     markerMatchIds: reasonCode === null ? [...markers].filter(id => ids.has(id)) : [], safeInspection: null,
-    serverSeconds, firstSeenAt: verifiedAt, observations, batches, queryPOSTsIssued,
+    serverSeconds, firstSeenAt: verifiedAt, observations, batches, queryPOSTsIssued, windowSize, expansionReason,
     receivedOrderChronologicalDescending: posts.length > 1 ? posts.every((p, i) => !i || posts[i - 1].creation_time >= p.creation_time) : null,
     actualNewestFiveGuaranteed: false });
   for (let batchIndex = 0; batchIndex < maxBatches; batchIndex++) {
@@ -182,17 +187,31 @@ export async function readCompleteWindow(page: Page, headForm: URLSearchParams,
       if (result.posts.some(p => posts.some(prior => prior.post_id === p.post_id && prior.creation_time !== p.creation_time)))
         return finish('WINDOW_CHAIN_CONFLICT');
       if (result.posts.some(p => ids.has(p.post_id))) return finish('WINDOW_CHAIN_OVERLAP');
-      const needed = 5 - posts.length;
+      if (options.expandOnRisk && windowSize === 3) {
+        const combined = [...posts, ...result.posts];
+        const ordered = combined.every((post, i) => !i || combined[i - 1].creation_time >= post.creation_time);
+        // Key evidence is a reason to inspect more, never proof that an item is
+        // pinned/new. False/null flags do not force an extra request every poll.
+        const promotion = result.safeInspection?.window.posts.some((post: any) => {
+          const evidence = post.pinAndFeatured;
+          return evidence?.keyEvidenceTruncated || evidence?.keyEvidence.some((key: any) =>
+            key.valueKind !== 'null' && !(key.valueKind === 'boolean' && key.booleanValue === false));
+        });
+        if (!ordered || promotion) {
+          windowSize = 5; expansionReason = !ordered ? 'non_chronological' : 'promotion_evidence';
+        }
+      }
+      const needed = windowSize - posts.length;
       for (const post of result.posts.slice(0, needed)) {
         if (!posts.length) verifiedAt = new Date(observedMs).toISOString();
         posts.push(post); ids.add(post.post_id); batch.selectedPostCount++;
         observations[post.post_id] ??= observePost(post, response, ms, observedMs, observedMonoMs);
       }
       for (const id of result.markerMatchIds) if (ids.has(id)) markers.add(id);
-      if (posts.length === 5) return finish(null);
+      if (posts.length === windowSize) return finish(null);
       if (batchIndex + 1 >= maxBatches || !info.usable || info.hasNextPage !== true || !info.endCursor)
         return finish('BASELINE_INCOMPLETE');
-      form = makeContinuationReadForm(headForm, observed!, info.endCursor, 5 - posts.length, sourceId);
+      form = makeContinuationReadForm(headForm, observed!, info.endCursor, windowSize - posts.length, sourceId, requestedSize);
     } finally { batch.queryMs = Math.round(performance.now() - started); await response.dispose(); }
   }
   return finish('BASELINE_INCOMPLETE');

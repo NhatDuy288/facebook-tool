@@ -4,7 +4,7 @@ Tool theo dõi bài Facebook mới và thực hiện Like, Share, Comment theo c
 
 Điểm chính:
 
-- Lấy 5 bài hiện có làm mốc; theo dõi bài mới từ các lượt đọc tiếp theo.
+- Lấy 3 bài hiện có làm mốc; theo dõi bài mới từ các lượt đọc tiếp theo.
 - Ba thao tác chạy song song trên tab nền, giữ nguyên cửa sổ đang thu nhỏ và ứng dụng bạn đang dùng.
 - Chỉnh bình luận luân phiên, lời chia sẻ, hashtag, nguồn và khoảng chờ trên giao diện.
 - Lưu công việc trước khi gửi; kết quả chưa rõ cần đối soát, không tự gửi lại.
@@ -33,11 +33,13 @@ npm.cmd start
 
 1. Trong cửa sổ được mở, bấm **Mở Facebook / Đăng nhập** và đăng nhập tài khoản cá nhân dùng tương tác.
 2. Chọn nguồn, chế độ, nội dung và từng thao tác cần bật. Bấm **Lưu cấu hình**; nút **Lấy mốc/Bắt đầu** cũng lưu các thay đổi trước khi chạy.
-3. Bấm **Lấy mốc 5 bài** để kiểm tra nguồn. Bấm **Bắt đầu** để lấy mốc mới và theo dõi liên tục.
+3. Bấm **Lấy mốc 3 bài** để kiểm tra nguồn. Bấm **Bắt đầu** để lấy mốc mới và theo dõi liên tục.
 4. Có thể thu nhỏ trình duyệt và làm việc khác. Giữ tiến trình chạy, máy có mạng và không ngủ.
 5. **Dừng ngay** ngăn phần chưa gửi; **Đóng tool** đóng ứng dụng và trình duyệt riêng.
 
 Mỗi lần khởi động có thể dùng cổng khác. Dùng địa chỉ/cửa sổ mới được tool mở; địa chỉ hiện tại cũng nằm trong `data/runtime.json`.
+
+Mỗi lượt yêu cầu 3 bài trong luồng chính đã xác minh. Nếu có dấu hiệu ghim/nổi bật hoặc thứ tự không theo giờ đăng, kiểm tra mở rộng tối đa 5 bài bằng cursor thực tế, không quá 2 yêu cầu/lượt. UI vẫn hiện 3 bài theo giờ đăng trong tập đã đọc; mọi ID đã xác minh đều tham gia chống trùng/nhận bài. Bài cũ được đưa lên lại không thành bài mới vì đổi vị trí. Thiếu bằng chứng giữ danh sách hợp lệ trước đó; không bảo đảm Facebook luôn trả các bài mới nhất.
 
 ## Chế độ và kết quả
 
@@ -67,13 +69,13 @@ Mở **Chi tiết** để xem thời gian đọc, khoảng cách hai lượt đ�
 
 Mở **Chi tiết** để xem từng bước của Like/Share/Comment: tải bài, xác minh, tìm nút, soạn, bấm gửi, chờ phản hồi và đọc lại kết quả. Mỗi bước có thời lượng riêng và mốc cộng dồn từ đầu nhánh; bước lâu nhất được tô đậm. Tách **Facebook xác nhận** với **Tool xác minh xong**. Phản hồi sơ bộ chưa đủ bằng chứng được ghi riêng, không coi là xác nhận thành công. Các mốc từ lúc đăng dùng hiệu chỉnh giờ Facebook; bài thử có sẵn tính từ lúc bấm thử. Số đo cập nhật trong bộ nhớ khi chạy và lưu cùng kết quả, không thêm thời gian chờ hay yêu cầu mạng. Lượt cũ chưa đo từng bước để trống.
 
-Khoảng chờ mặc định **5 giây bắt đầu sau khi lượt đọc trước kết thúc**; chu kỳ thực tế còn có thời gian đọc. Đây không phải cam kết phát hiện trong tối đa 5 giây. Phép đo từ giờ đăng là ước tính có sai số do mạng/độ chính xác giờ Facebook. Dữ liệu cũ hoặc thiếu hiệu chỉnh để trống.
+Khoảng chờ mặc định **2 giây bắt đầu sau khi lượt đọc trước kết thúc**; chu kỳ thực tế còn có thời gian đọc. Đây không phải cam kết phát hiện trong tối đa 2 giây. Phép đo từ giờ đăng là ước tính có sai số do mạng/độ chính xác giờ Facebook. Dữ liệu cũ hoặc thiếu hiệu chỉnh để trống.
 
 ## Dữ liệu riêng và chuyển máy
 
 Không đưa `data/`, `sources.local.json`, cookie, hồ sơ trình duyệt hoặc log lên GitHub. `.gitignore` đã loại các mục này.
 
-Clone chỉ chuyển mã nguồn. Trên máy mới cần cấu hình nguồn và đăng nhập lại; lịch sử trên máy cũ không tự đồng bộ. Không chạy đồng thời hai bản cùng tài khoản/nguồn. Khi Bắt đầu, 5 bài có sẵn được bỏ qua; tool không quét bù bài trong lúc tắt.
+Clone chỉ chuyển mã nguồn. Trên máy mới cần cấu hình nguồn và đăng nhập lại; lịch sử trên máy cũ không tự đồng bộ. Không chạy đồng thời hai bản cùng tài khoản/nguồn. Khi Bắt đầu, 3 bài có sẵn được bỏ qua; tool không quét bù bài trong lúc tắt.
 
 ## Phát triển và kiểm tra
 

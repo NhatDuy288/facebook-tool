@@ -21,11 +21,11 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 
 ## 3. Phát hiện bài
 
-1. Mỗi lần Bắt đầu xác minh tài khoản và nguồn, đọc hai cửa sổ hợp lệ đủ 5 bài để tạo mốc mới; bỏ qua bài có sẵn trong cả hai lượt.
-2. Mặc định chờ 5 giây sau khi lượt trước kết thúc. Chu kỳ thực gồm chờ và đọc; không cam kết độ trễ tối đa.
+1. Mỗi lần Bắt đầu xác minh tài khoản và nguồn, đọc hai lượt hợp lệ với cửa sổ chính 3 bài để tạo mốc mới; bỏ qua mọi ID đã xác minh trong cả hai lượt, kể cả phần mở rộng.
+2. Mặc định chờ 2 giây sau khi lượt trước kết thúc. Chu kỳ thực gồm chờ và đọc; không cam kết độ trễ tối đa.
 3. Chỉ nhận bài đúng nguồn, có ID/thời gian hợp lệ, không trước mốc giờ Facebook và chưa có trong lịch sử. Không lấy ID lớn nhất hay thứ tự hiển thị làm bằng chứng duy nhất.
-4. Chỉ dùng yêu cầu đọc thực tế đã quan sát/xác minh. Tối đa hai batch để hoàn chỉnh cửa sổ hiện tại; không phân trang tìm bài bỏ lỡ.
-5. Phản hồi lỗi/thiếu giữ cửa sổ hợp lệ cuối. Ba lỗi đọc liên tiếp dừng phiên; lỗi đăng nhập, xác minh hoặc đổi danh tính dừng để kiểm tra.
+4. Chỉ dùng yêu cầu đọc thực tế đã quan sát/xác minh. Yêu cầu đầu 3 bài; dấu hiệu ghim/nổi bật hoặc đảo thứ tự thì mở rộng tối đa 5 bằng cursor cùng chuỗi. Không quá hai batch/lượt; không phân trang quét bù. Chỉ coi trường ghim/nổi bật là dấu hiệu kiểm tra thêm, không tự suy ra bài mới.
+5. UI hiện 3 bài theo giờ đăng trong tập đã đọc; phát hiện/chống trùng dùng mọi bài đã xác minh. Không cam kết cửa sổ là các bài mới nhất của toàn feed. Phản hồi lỗi/thiếu, kể cả mở rộng chưa đủ, giữ cửa sổ hợp lệ cuối. Ba lỗi đọc liên tiếp dừng phiên; lỗi đăng nhập, xác minh hoặc đổi danh tính dừng để kiểm tra.
 
 ## 4. Thao tác và chống trùng
 
@@ -36,7 +36,7 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 - Comment xác nhận nhanh từ phản hồi dạng đơn/mảng khi khớp tài khoản, nội dung và bài đích. Share chỉ bỏ tải lại khi đủ bằng chứng bài mới/bài gốc/quyền riêng tư từ phản hồi hoặc thẻ bài đã đăng; thiếu/mâu thuẫn vẫn đọc lại.
 - Chỉ đánh dấu thành công khi có bằng chứng kết quả. Kết quả chưa rõ không tự gửi lại; đối soát chỉ đọc, hoặc người vận hành xác nhận thủ công.
 - Khôi phục phân biệt chưa gửi, đang chuẩn bị và đã bắt đầu gửi. Thành công giữ nguyên; sau gián đoạn, phần có thể đã gửi chuyển trạng thái cần đối soát.
-- Lịch sử chống trùng tồn tại qua khởi động lại và đổi cửa sổ 5 bài. Không xóa theo kỳ nhật ký; giao dịch lưu phải nguyên tử.
+- Lịch sử chống trùng tồn tại qua khởi động lại và đổi cửa sổ 3 bài. Không xóa theo kỳ nhật ký; giao dịch lưu phải nguyên tử.
 - Chỉ một tiến trình được dùng cùng thư mục dữ liệu. Không điều khiển cùng tài khoản từ hai máy đồng thời.
 
 ## 5. Thời gian và chạy nền

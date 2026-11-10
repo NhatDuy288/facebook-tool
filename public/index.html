@@ -11,13 +11,13 @@
 </nav>
 <div id="overview-panel" role="tabpanel" aria-labelledby="overview-tab">
 <section class="control card"><div><h1>Theo dõi bài mới</h1><p id="note" aria-live="polite">Đang kết nối với ứng dụng…</p><div id="account" class="muted">Chưa xác minh tài khoản theo dõi</div></div>
-<div class="run-buttons"><button id="baseline" class="secondary">Lấy mốc 5 bài</button><button id="start" class="primary">Bắt đầu</button><button id="stop" class="danger">Dừng ngay</button></div></section>
+<div class="run-buttons"><button id="baseline" class="secondary">Lấy mốc 3 bài</button><button id="start" class="primary">Bắt đầu</button><button id="stop" class="danger">Dừng ngay</button></div></section>
 <div class="metrics"><div class="metric"><span>Lượt đọc / Yêu cầu nền</span><strong id="reads">0 / 0</strong></div><div class="metric"><span>Lượt đọc gần nhất</span><strong id="latency">—</strong></div><div class="metric"><span>Dữ liệu đọc trong phiên</span><strong id="bytes">0 MB</strong></div><div class="metric"><span>Lần đọc thành công</span><strong id="last-read">—</strong></div></div>
 <main><section class="card config-panel"><div class="section-title"><h2>Cấu hình</h2><span id="saved" class="muted">Đã lưu</span></div>
 <form id="config-form">
 <label>Nguồn theo dõi<select id="target">__SOURCE_OPTIONS__</select></label>
 <a id="source-url" href="#" target="_blank" rel="noreferrer">Mở nguồn theo dõi ↗</a>
-<div class="row"><label>Chế độ<select id="mode"><option value="dry-run">Chạy thử · chỉ ghi nhận</option><option value="test">Test · chia sẻ Chỉ mình tôi</option><option value="live">Thực tế · chia sẻ Công khai</option></select></label><label>Chờ giữa các lượt (giây)<input id="poll-seconds" type="number" min="1" max="300" required value="5"></label></div>
+<div class="row"><label>Chế độ<select id="mode"><option value="dry-run">Chạy thử · chỉ ghi nhận</option><option value="test">Test · chia sẻ Chỉ mình tôi</option><option value="live">Thực tế · chia sẻ Công khai</option></select></label><label>Chờ giữa các lượt (giây)<input id="poll-seconds" type="number" min="1" max="300" required value="2"></label></div>
 <p id="mode-note" class="notice">Chạy thử chỉ ghi lại nội dung dự kiến.</p>
 <fieldset><legend>Thao tác tự động</legend><label class="check"><input id="enable-like" type="checkbox" checked> Like</label><label class="check"><input id="enable-share" type="checkbox" checked> Share</label><label class="check"><input id="enable-comment" type="checkbox" checked> Comment</label></fieldset>
 <label>Danh sách bình luận <span class="muted">Mỗi dòng một nội dung; dùng lần lượt rồi quay vòng</span><textarea id="comments" rows="5" maxlength="100000" placeholder="test 1&#10;test 2&#10;test 3&#10;test 4"></textarea></label>
@@ -28,7 +28,7 @@
 <button id="save" class="primary" type="submit">Lưu cấu hình</button>
 </form></section>
 <div class="right-column"><section class="card next-plan"><span class="eyebrow">ĐÃ CHUẨN BỊ TRƯỚC</span><h2>Bình luận cho bài kế tiếp</h2><div id="next-comment" class="comment-preview">—</div><div class="muted small">Việc đã nhận giữ nguyên nội dung, kể cả khi bạn sửa danh sách.</div><details><summary>Xem trước nội dung chia sẻ</summary><div id="share-preview" class="share-preview"></div><p id="audience-preview" class="muted small"></p></details></section>
-<section class="card"><div class="section-title"><h2>Cửa sổ 5 bài hiện tại</h2><span id="window-count" class="pill neutral">0 / 5</span></div><p class="muted small">Mỗi lần Bắt đầu lấy mốc mới. Bài có sẵn và bài trong lúc tắt tool được bỏ qua.</p><div class="table-scroll"><table><thead><tr><th>Bài viết</th><th>Thời gian đăng</th><th></th></tr></thead><tbody id="posts"><tr><td colspan="3" class="empty">Chưa lấy mốc.</td></tr></tbody></table></div>
+<section class="card"><div class="section-title"><h2>Cửa sổ 3 bài hiện tại</h2><span id="window-count" class="pill neutral">0 / 3</span></div><p id="window-note" class="muted small">Mỗi lần Bắt đầu lấy mốc mới. Bài có sẵn và bài trong lúc tắt tool được bỏ qua.</p><div class="table-scroll"><table><thead><tr><th>Bài viết</th><th>Thời gian đăng</th><th></th></tr></thead><tbody id="posts"><tr><td colspan="3" class="empty">Chưa lấy mốc.</td></tr></tbody></table></div>
 <div id="test-controls" class="test-controls" hidden><p class="small">Thử tương tác trên một bài có sẵn của Nguồn thử nghiệm, theo nội dung và thao tác đang bật.</p><button id="test-existing" class="secondary">Thử trên bài được chọn</button></div></section>
 <section class="card"><div class="section-title"><h2>Kết quả tương tác</h2><span id="queue" class="muted small"></span></div><div id="jobs"><div class="empty">Chưa có công việc. Công việc mới sẽ xuất hiện khi phát hiện bài hợp lệ.</div></div></section></div></main>
 <section class="card logs"><div class="section-title"><h2>Nhật ký</h2><span class="muted small">Hiện 100 dòng gần nhất · Lưu 30 ngày</span></div><div id="logs" role="log"></div></section>

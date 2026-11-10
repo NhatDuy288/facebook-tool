@@ -12,8 +12,8 @@ function template(): ObservedContinuation {
     artifact: { operationMatched: true, headCursorNullAllowed: true, cursorArgumentName: 'cursor', countFeedsFirst: true, cursorFeedsAfter: true },
     form: new URLSearchParams({ doc_id: '123456', fb_api_req_friendly_name: friendlyName, variables: JSON.stringify(variables), __user: '111111111' }) };
 }
-function head(t = template()) { return new URLSearchParams({ doc_id: '123456', fb_api_req_friendly_name: t.friendlyName,
-  variables: JSON.stringify({ ...t.variables, count: 5, stream_count: 5, cursor: null }), __user: '111111111', fb_dtsg: 'fresh-secret' }); }
+function head(t = template(), count: 3 | 5 = 5) { return new URLSearchParams({ doc_id: '123456', fb_api_req_friendly_name: t.friendlyName,
+  variables: JSON.stringify({ ...t.variables, count, stream_count: count, cursor: null }), __user: '111111111', fb_dtsg: 'fresh-secret' }); }
 function records(ids: string[], cursor = 'actual-fresh-end', hasNext = true, markerID?: string): any[] {
   return [{ data: { node: { id: SOURCE_ID, timeline_list_feed_units: { edges: ids.map((id, i) => ({ node: {
     __typename: 'Story', id: `story-${id}`, post_id: id, creation_time: 1793850629 - Number(id), actors: [{ id: SOURCE_ID }],
@@ -42,6 +42,60 @@ test('logical five uses fresh actual main cursor in exactly two sequential batch
   assert.equal(second.cursor, 'actual-fresh-end'); assert.equal(second.count, 2); assert.equal(second.stream_count, 2);
   assert.equal(sent[1].get('fb_dtsg'), 'fresh-secret'); assert.equal(result.batches[1].returnedPostCount, 2);
   assert.equal(JSON.stringify(result).includes('actual-fresh-end'), false); assert.equal(JSON.stringify(result).includes('fresh-secret'), false);
+});
+
+test('three-post head requests exactly three, ignores off-feed/attached featured items and does not expand false flags', async () => {
+  const t = template(), data = records(['1', '2', '3']);
+  const main = data[0].data.node.timeline_list_feed_units.edges[0].node;
+  main.is_pinned = false; main.is_featured = false;
+  main.attached_story = { __typename: 'Story', post_id: '99', creation_time: 1794217905, is_featured: true, actors: [{ id: SOURCE_ID }] };
+  data[0].data.featured = { node: { ...main, post_id: '98', is_featured: true } };
+  const { page, sent } = fakePage([data]);
+  const result = await readCompleteWindow(page, head(t, 3), { observedTemplate: t, windowSize: 3, expandOnRisk: true });
+  assert.equal(result.usable, true); assert.equal(result.queryPOSTsIssued, 1);
+  assert.deepEqual(result.posts.map(p => p.post_id), ['1', '2', '3']);
+  assert.equal(result.windowSize, 3); assert.equal(result.expansionReason, null);
+  assert.equal(JSON.parse(sent[0].get('variables')!).count, 3);
+  assert.equal(JSON.parse(sent[0].get('variables')!).stream_count, 3);
+  assert.equal(result.actualNewestFiveGuaranteed, false, 'response order is never a claim about the entire feed');
+});
+
+test('pin or featured evidence extends the same verified cursor chain to five with at most two requests', async () => {
+  for (const flag of ['is_pinned', 'is_featured']) {
+    const t = template(), first = records(['1', '2', '3']);
+    first[0].data.node.timeline_list_feed_units.edges[0].node[flag] = true;
+    const { page, sent } = fakePage([first, records(['4', '5'], 'next', false)]);
+    const result = await readCompleteWindow(page, head(t, 3), { observedTemplate: t, windowSize: 3, expandOnRisk: true });
+    assert.equal(result.usable, true); assert.equal(result.windowSize, 5); assert.equal(result.expansionReason, 'promotion_evidence');
+    assert.equal(sent.length, 2);
+    const followup = JSON.parse(sent[1].get('variables')!);
+    assert.equal(followup.count, 2); assert.equal(followup.stream_count, 2); assert.equal(followup.cursor, 'actual-fresh-end');
+    assert.deepEqual(result.posts.map(p=>p.post_id), ['1','2','3','4','5']);
+  }
+});
+
+test('old reordered item cannot hide a single fresh main-feed post within the bounded extended read', async () => {
+  const t = template(), first = records(['1', '2', '3']), second = records(['4', '5'], 'next', false);
+  first[0].data.node.timeline_list_feed_units.edges[0].node.creation_time -= 10000;
+  second[0].data.node.timeline_list_feed_units.edges[0].node.creation_time += 20000;
+  const { page, sent } = fakePage([first, second]);
+  const result = await readCompleteWindow(page, head(t, 3), { observedTemplate: t, windowSize: 3, expandOnRisk: true });
+  assert.equal(result.usable, true); assert.equal(result.expansionReason, 'non_chronological');
+  assert.ok(result.posts.some(p=>p.post_id==='4')); assert.equal(sent.length, 2);
+  assert.equal(result.posts[0].post_id, '1', 'transport retains actual order; display sorting cannot manufacture coverage');
+});
+
+test('uncertain three-post coverage never invents a cursor or accepts an incomplete expansion', async () => {
+  const t = template(), first = records(['1', '2', '3'], '', true);
+  first[0].data.node.timeline_list_feed_units.edges[0].node.is_featured = true;
+  first[0].data.featured = { page_info: { has_next_page: true, end_cursor: 'unrelated-cursor' } };
+  const missing = fakePage([first]);
+  const rejected = await readCompleteWindow(missing.page, head(t, 3), { observedTemplate: t, windowSize: 3, expandOnRisk: true });
+  assert.equal(rejected.usable, false); assert.equal(rejected.reasonCode, 'BASELINE_INCOMPLETE'); assert.equal(missing.sent.length, 1);
+  const pending = records(['1', '2', '3']); pending[0].data.node.timeline_list_feed_units.edges[0].node.is_pinned = true;
+  const short = fakePage([pending, records(['4'], 'next', true)]);
+  const incomplete = await readCompleteWindow(short.page, head(t, 3), { observedTemplate: t, windowSize: 3, expandOnRisk: true });
+  assert.equal(incomplete.usable, false); assert.equal(incomplete.reasonCode, 'BASELINE_INCOMPLETE'); assert.equal(short.sent.length, 2);
 });
 
 test('publication delay cancels a four-minute PC clock skew and includes download/validation time', async t => {
