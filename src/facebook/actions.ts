@@ -6,6 +6,7 @@ import type { Account, Job, ActionAdapter, SubmitHooks, ConfirmedResult } from '
 import { mutationConfirmation, mutationActorAllowed, safeFacebookUrl, commentRequestProof, mutationHasErrors } from './confirmation.ts';
 import { currentPageShareAudience } from './share-verification.ts';
 import { PostLoader, postReadyProbe, type LoadingOptions } from './post-loading.ts';
+import { openShareComposer, type ShareOpeningShape } from './share-opening.ts';
 import { parseRecords } from './feed/query-parser.mjs';
 const LIKE = /^(Thích|Like|Bày tỏ cảm xúc Thích về bài viết của .+|Like .+['’]s post)$/i;
 const LIKED = /^(Bỏ thích|Unlike|Đã thích|Liked|Gỡ lượt thích|Gỡ Thích khỏi bài viết của .+|Remove Like from .+['’]s post|(?:Gỡ|Xóa|Bỏ) cảm xúc Thích về bài viết của .+)$/i;
@@ -110,6 +111,7 @@ export class FacebookActions implements ActionAdapter {
   postIds = new Map<ActionName, string>();
   shareBinding = new WeakMap<Page, string>();
   loader: PostLoader;
+  shareOpening: ShareOpeningShape | null = null;
   constructor(session: BrowserSession, loading: LoadingOptions = {}) { this.session = session; this.loader = new PostLoader(loading); }
   async prepare(account: Account) {
     this.account = account;
@@ -121,7 +123,7 @@ export class FacebookActions implements ActionAdapter {
     hooks.signal.throwIfAborted();
     if (!this.account || this.account.id !== job.accountId) throw Error('ACTOR_CHANGED');
     const page = this.pages.get(name); if (!page || page.isClosed()) throw Error('STOPPED');
-    hooks.onImplementation?.('action-timing-v2');
+    hooks.onImplementation?.(name === 'share' ? 'share-opening-adaptive-v1' : 'a12829d-baseline');
     // Install only immediately before submitting, then remove before read-back navigation.
     // Routing disables HTTP cache, so it must not cover initial page/composer rendering.
     const writeGuard = async (route: Route) => {
@@ -214,18 +216,9 @@ export class FacebookActions implements ActionAdapter {
         hooks.onServerConfirmed?.(result); return result;
       }
       stage('open_share_composer');
-      await (await oneVisible(bar.getByRole('button', { name: SHARE }))).click(); hooks.signal.throwIfAborted();
-      this.shareBinding.set(page, job.id);
-      const editorMatch = page.getByRole('textbox', { name: /^(Hãy nói gì đó về nội dung này|Say something about this|Write something)/i });
-      const dialog = page.locator('[role="dialog"]:not(:has([role="dialog"]))').filter({ has: editorMatch });
-      let composer: Locator;
-      try { composer = await oneVisible(dialog, 4000); }
-      catch {
-        stage('share_menu_fallback');
-        const feed = await oneVisible(page.getByRole('menuitem', { name: /^(Chia sẻ lên (?:Bảng feed|bảng tin|trang cá nhân)|Viết bài|Share to (?:Feed|your timeline)|Write post)$/i }), 2500);
-        await feed.click();
-        composer = await oneVisible(dialog, 6000);
-      }
+      this.shareOpening = null;
+      const composer = await openShareComposer(page, bar, { signal: hooks.signal, stage, diagnostic: shape => { this.shareOpening = shape; } });
+      hooks.signal.throwIfAborted(); this.shareBinding.set(page, job.id);
       stage('verify_share_destination');
       await this.verifyShareDestination(page, composer, job);
       stage('set_share_audience');
@@ -456,6 +449,7 @@ export class FacebookActions implements ActionAdapter {
         editors: [...document.querySelectorAll('[role="textbox"]')].filter(n => /^(Viết bình luận|Write a comment|Hãy nói gì đó|Say something)/i.test(n.getAttribute('aria-label') || '')).map(n => ({ label: n.getAttribute('aria-label'), editable: n.getAttribute('contenteditable') }))
       })).catch(() => ({ closed: true }));
       result[name] = { ...(result[name] as any), stage: this.stages.get(name), loading: this.loader.diagnostics(page), mutations: this.lastMutations.get(name),
+        ...(name === 'share' ? { opening: this.shareOpening } : {}),
         reaction: this.postIds.get(name) ? await this.reactionState(page, this.postIds.get(name)!).catch(() => 'unknown') : null };
     }
     return result;

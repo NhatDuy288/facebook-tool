@@ -21,6 +21,7 @@ export type ActionPreparation = { readRemainderMs: number | null; dispatchWaitMs
 export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_original_post' | 'find_post_scope'
   | 'find_action_bar' | 'check_existing_reaction' | 'open_comment_editor' | 'fill_comment'
   | 'open_share_composer' | 'share_menu_fallback' | 'verify_share_destination' | 'set_share_audience'
+  | 'share_open_find_button' | 'share_open_click_button' | 'share_open_wait_surface' | 'share_open_click_feed' | 'share_open_wait_editor'
   | 'fill_share' | 'verify_share_before_submit' | 'prepare_submission' | 'submit' | 'wait_server'
   | 'verify_like' | 'comment_readback_open_tab' | 'comment_readback_navigate' | 'comment_readback_verify'
   | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
