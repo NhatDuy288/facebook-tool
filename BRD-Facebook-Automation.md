@@ -56,5 +56,3 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 - Repository chỉ gồm mã nguồn cần chạy, dependency lock, launcher, cấu hình mẫu, tài liệu và kiểm thử có dữ liệu giả lập; không phụ thuộc tài liệu nghiên cứu riêng.
 - Đạt khi clone sạch cài/chạy được theo README; nguồn chỉnh được không sửa mã; kiểm tra TypeScript và các bộ test đạt; không gửi trùng/nhầm nguồn; Dừng/khôi phục/đối soát an toàn; số đo chịu được lệch giờ; test Windows xác nhận giữ focus và trạng thái thu nhỏ.
 - Test giả lập không thay thế nghiệm thu Facebook thật. Chưa cam kết 24/7, độ trễ cố định, mọi dạng bài hoặc xuất bản công khai cho mọi tài khoản.
-
-- Mở Share nhận diện đồng thời menu và hộp soạn gắn với Bảng feed; chỉ chọn mục mở hộp soạn, không bấm chia sẻ ngay. Tách thời gian tìm nút/bấm/chờ/menu/editor và mốc request/phản hồi; lưu nhãn bản thực thi trong trace. Thiếu hoặc mơ hồ vẫn dừng, giữ xác minh tài khoản/đích/quyền riêng tư và đọc lại như trước. Khi triển khai phải có checkpoint mã trước sửa và kiểm tra khả năng hoàn tác, giữ dữ liệu phiên chạy.

@@ -21,16 +21,14 @@ export type ActionPreparation = { readRemainderMs: number | null; dispatchWaitMs
 export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_original_post' | 'find_post_scope'
   | 'find_action_bar' | 'check_existing_reaction' | 'open_comment_editor' | 'fill_comment'
   | 'open_share_composer' | 'share_menu_fallback' | 'verify_share_destination' | 'set_share_audience'
-  | 'share_open_find_button' | 'share_open_click_button' | 'share_open_wait_surface' | 'share_open_click_feed' | 'share_open_wait_editor'
   | 'fill_share' | 'verify_share_before_submit' | 'prepare_submission' | 'submit' | 'wait_server'
   | 'verify_like' | 'comment_readback_open_tab' | 'comment_readback_navigate' | 'comment_readback_verify'
   | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
   | 'share_readback_navigate' | 'share_readback_verify' | 'share_readback_scope'
   | 'share_readback_audience' | 'share_verify_response' | 'share_verify_current_page' | 'cleanup';
-export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed'
-  | 'mutationRequestObserved' | 'mutationResponseReceived' | 'mutationBodyRead' | 'submitControlFinished';
+export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed';
 export type ActionTraceStep = { stage: ActionStage; startMs: number; endMs: number; status: 'completed' | 'running' | 'interrupted' };
-export type ActionTraceData = { version: 1; implementation?: string; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
+export type ActionTraceData = { version: 1; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
   finishedMs: number | null };
 export type Account = { id: string; name: string };
 export type ActionState = 'ready' | 'preparing' | 'submitting' | 'succeeded' | 'failed' | 'unknown' | 'cancelled' | 'simulated' | 'skipped';
@@ -43,8 +41,7 @@ export type LogEntry = { id: number; at: string; level: 'info' | 'warning' | 'er
 export type Reader = { prepare(target: Config['target'], signal: AbortSignal): Promise<Account>;
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
 export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
-  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void;
-  onMilestone?: (milestone: ActionMilestone) => void; onImplementation?: (implementation: string) => void };
+  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
 export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string;
   shareProof?: { identityVerified: boolean; audience: 'only_me' | 'public' | null } };
 export type ActionAdapter = { prepare(account: Account): Promise<void>;

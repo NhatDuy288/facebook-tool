@@ -7,7 +7,6 @@ export class ActionTrace {
   private milestones: ActionTraceData['milestones'] = {};
   private finishedMs: number | null = null;
   private interrupted = false;
-  private implementation?: string;
   private started: number;
   private now: () => number;
   constructor(started: number, now: () => number = () => performance.now()) { this.started = started; this.now = now; }
@@ -22,9 +21,6 @@ export class ActionTrace {
   mark(name: ActionMilestone) {
     if (this.finishedMs === null && this.milestones[name] === undefined) this.milestones[name] = this.elapsed();
   }
-  label(implementation: string) {
-    if (this.finishedMs === null && !this.implementation && /^[a-zA-Z0-9._-]{1,64}$/.test(implementation)) this.implementation = implementation;
-  }
   finish(interrupted = false) {
     if (this.finishedMs !== null) return;
     this.finishedMs = this.elapsed(); this.interrupted = interrupted;
@@ -33,7 +29,7 @@ export class ActionTrace {
   }
   snapshot(): ActionTraceData {
     const end = this.finishedMs ?? this.elapsed();
-    return { version: 1, ...(this.implementation ? { implementation: this.implementation } : {}), finishedMs: this.finishedMs, milestones: { ...this.milestones },
+    return { version: 1, finishedMs: this.finishedMs, milestones: { ...this.milestones },
       steps: this.steps.map((step, index) => index === this.steps.length - 1
         ? { ...step, endMs: end, status: this.finishedMs === null ? 'running' : this.interrupted ? 'interrupted' : 'completed' }
         : { ...step }) };

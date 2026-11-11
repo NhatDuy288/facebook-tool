@@ -11,21 +11,19 @@ import type { Reader } from '../types.ts';
 const accountScript = `<script>globalThis.require=name=>name==='CurrentUserInitialData'
   ?{USER_ID:'10',ACCOUNT_ID:'10',NAME:'Test'}:name==='getAsyncParams'?()=>({__user:'10'}):null</script>`;
 const ownUrl = 'https://www.facebook.com/example.account/posts/pfbidCreated40';
-function originalHtml(showSharedCard = false, commentDelayMs = 0, opening?: 'menu' | 'renamed') {
+function originalHtml(showSharedCard = false, commentDelayMs = 0) {
   const card = `<div role="article"><div><a href="${ownUrl}"><time datetime="2026-11-09T10:00:00Z">Just now</time></a><span aria-label="Only me">Lock</span></div></div>`;
   const comment = `<div role="article"><button role="button" aria-label="Edit or delete this comment">Edit</button><span dir="auto">test 1</span><a href="/permalink.php?story_fbid=30&id=20&comment_id=123456">Comment link</a></div>`;
-  const open=opening==='menu'?"document.querySelector('#share-menu').hidden=false":"document.querySelector('#composer').hidden=false";
   return accountScript + `<script type="application/json">{"__typename":"Story","post_id":"30","actors":[{"id":"20"}],"feedback":{"id":"feedback-original-30","owning_profile":{"id":"20"},"viewer_has_reacted":false}}</script>
   <div role="dialog"><h1>Bài viết của Source</h1><div>
   <button id="like" aria-pressed="false" onclick="send('FeedbackReactMutation',{}).then(()=>{this.textContent='Unlike';this.setAttribute('aria-pressed','true')})">Like</button>
   <button onclick="document.querySelector('#comment').hidden=false">Comment</button>
-  <button onclick="${open}">Share</button></div>
+  <button onclick="document.querySelector('#composer').hidden=false">Share</button></div>
   <div id="comment" role="textbox" contenteditable="true" hidden></div>
   <div id="comments">${commentDelayMs ? '' : comment}</div>
   </div>
-  <div id="share-menu" role="menu" hidden><button role="menuitem" onclick="this.parentElement.hidden=true;document.querySelector('#composer').hidden=false">Share to Feed</button></div>
   <div id="composer" role="dialog" hidden><button>Your Feed</button><span>Test</span><button>Only me</button>
-  <div role="textbox" aria-label="${opening==='renamed'?'Changed editor name':'Say something about this'}" contenteditable="true"></div>
+  <div role="textbox" aria-label="Say something about this" contenteditable="true"></div>
   <button onclick="send('ComposerStoryCreateMutation',{message:{text:document.querySelector('#composer [role=textbox]').textContent}})">Post</button></div>
   <script>
   ${commentDelayMs ? `setTimeout(()=>document.querySelector('#comments').innerHTML=${JSON.stringify(comment)},${commentDelayMs});` : ''}
@@ -36,7 +34,7 @@ function originalHtml(showSharedCard = false, commentDelayMs = 0, opening?: 'men
   </script>`;
 }
 
-async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public'; commentDelayMs?: number; opening?: 'menu' | 'renamed' }) {
+async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public'; commentDelayMs?: number }) {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: null });
   const session = new BrowserSession(); session.context = context; session.browser = browser;
@@ -65,7 +63,7 @@ async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 
     if (request.isNavigationRequest()) navigations.push(request.url());
     const shared = request.url() === ownUrl;
     const body = shared ? accountScript + `<script type="application/json">{"__typename":"Story","post_id":"40","actors":[{"id":"10"}]}</script>
-      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui', options.commentDelayMs, options.opening);
+      <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui', options.commentDelayMs);
     await route.fulfill({ contentType: 'text/html; charset=utf-8', body });
   });
   try {
@@ -156,20 +154,4 @@ test('a published share with the wrong privacy never becomes verified success', 
   assert.equal(share.code, 'RESULT_UNCONFIRMED');
   assert.equal(share.timing!.fromPublicationMs, null);
   assert.equal(navigations.filter(url => url === ownUrl).length, 1);
-});
-
-test('menu Share and renamed editor preserve actor, audience and no-duplicate-write verification', { timeout: 20_000 }, async () => {
-  for (const opening of ['menu','renamed'] as const) {
-    const {result}=await runWorkers({comment:'edge',share:'response',opening});
-    const share=result.actions.find(a=>a.name==='share')!;
-    assert.equal(share.code,'SERVER_CONFIRMED_RESPONSE_VERIFIED');
-    assert.equal(share.timing!.trace!.implementation,'share-opening-adaptive-v1');
-    const trace=share.timing!.trace!,marks=trace.milestones;
-    assert.ok(trace.steps.some(s=>s.stage==='share_open_wait_editor'));
-    assert.equal(trace.steps.some(s=>s.stage==='share_open_click_feed'),opening==='menu');
-    assert.ok(marks.mutationRequestObserved!>=marks.submitStarted!);
-    assert.ok(marks.mutationResponseReceived!>=marks.mutationRequestObserved!);
-    assert.ok(marks.mutationBodyRead!>=marks.mutationResponseReceived!);
-    assert.equal(typeof marks.submitControlFinished,'number');
-  }
 });
