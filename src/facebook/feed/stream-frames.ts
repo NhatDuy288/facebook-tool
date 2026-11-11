@@ -5,10 +5,16 @@ const scoped = (path: unknown): path is (string | number)[] => Array.isArray(pat
   && path[0] === 'user' && path[1] === 'timeline_list_feed_units';
 const samePath = (path: unknown, suffix: (string | number)[]) => Array.isArray(path)
   && path.length === suffix.length + 2 && scoped(path) && suffix.every((key, index) => path[index + 2] === key);
+// These deferred Video fields do not establish the identity, time or order of a post.
+const VIDEO_FIELDS = new Set(('dubbed_track_mapping can_viewer_share creation_story end_cards_channel_info '
+  + 'is_soundbites_video is_looping info comet_video_player_with_video_card_renderer id '
+  + 'instream_extra_config instream_video_ad_breaks_comet comet_video_player_live_video_endscreen_content '
+  + 'live_end_text is_huddle is_live_audio_room_v2_broadcast associated_paid_online_event '
+  + 'is_live_streaming is_paid_virtual_event_premium_content').split(' '));
 
 export function normalizeStreamFrames(input: any[]) {
   const diagnostics = { convertedEdgePatches: 0, rejectedEdgePatches: 0, duplicateEdgePatches: 0,
-    unsupportedScopedPatches: 0, initialEdgesObserved: 0, assembledPositions: 0 };
+    unsupportedScopedPatches: 0, ignoredVideoPatches: 0, initialEdgesObserved: 0, assembledPositions: 0 };
   const positions = new Map<number, string>(), edgeReferences = new WeakMap<object, number>();
   const indexedEdges = new Map<number, Frame>();
   let invalid = false;
@@ -38,6 +44,31 @@ export function normalizeStreamFrames(input: any[]) {
     if (!scoped(path)) return frame;
     if (samePath(path, [])) { connection(frame.data); return frame; }
     if (samePath(path, ['page_info']) || samePath(path, ['pageInfo'])) return frame;
+    if (path[2] === 'edges' && Number.isSafeInteger(path[3]) && path[4] === 'node'
+      && object(frame.data) && !Object.hasOwn(frame, 'items')) {
+      const root = indexedEdges.get(Number(path[3]))?.node;
+      let story = root, rest = path.slice(5);
+      if (rest[0] === 'comet_sections' && rest[1] === 'content' && rest[2] === 'story') {
+        story = root?.comet_sections?.content?.story; rest = rest.slice(3);
+        if (!object(story) || typeof root?.id !== 'string' || story.id !== root.id
+          || Object.hasOwn(story, '__typename') && story.__typename !== 'Story'
+          || Object.hasOwn(story, 'post_id') && story.post_id !== root.post_id) story = null;
+      }
+      if (object(story) && rest.length === 5 && rest[0] === 'attachments'
+        && Number.isSafeInteger(rest[1]) && Number(rest[1]) >= 0 && rest[2] === 'styles'
+        && rest[3] === 'attachment' && rest[4] === 'media') {
+        const media = story.attachments?.[Number(rest[1])]?.styles?.attachment?.media;
+        const keys = Object.keys(frame.data);
+        if (object(media) && media.__typename === 'Video' && typeof media.id === 'string' && media.id
+          && keys.length > 0 && keys.every(key => VIDEO_FIELDS.has(key))
+          && (!Object.hasOwn(frame.data, 'id') || frame.data.id === media.id)) {
+          diagnostics.ignoredVideoPatches++;
+          // Do not merge or traverse media payloads. Keep final/error evidence on the frame;
+          // capture.ts still inspects the original response for GraphQL/authentication errors.
+          return { ...frame, path: ['user', 'timeline_list_feed_units'], data: {} };
+        }
+      }
+    }
     if (path.length !== 4 || path[2] !== 'edges' || !Number.isSafeInteger(path[3])
       || Number(path[3]) < 0 || Number(path[3]) > 4) {
       diagnostics.unsupportedScopedPatches++; return frame;
