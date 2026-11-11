@@ -49,7 +49,7 @@ class MutationObserver {
   page: Page; action: ActionName; job: Job;
   armed = false; result: ConfirmedResult | null = null; failed = false; listener: (response: Response) => void;
   safeResponses: unknown[] = [];
-  constructor(page: Page, action: ActionName, job: Job, feedbackIds: string[], onServerResponse?: SubmitHooks['onServerResponse']) {
+  constructor(page: Page, action: ActionName, job: Job, feedbackIds: string[], onServerResponse?: SubmitHooks['onServerResponse'], onMilestone?: SubmitHooks['onMilestone']) {
     this.page = page; this.action = action; this.job = job;
     this.listener = response => {
       if (!this.armed) return;
@@ -62,9 +62,11 @@ class MutationObserver {
       const expected = action === 'comment' ? /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i
         : action === 'like' ? /(?:React|Reaction|Like)/i : /(?:StoryCreate|CreateStory|Share)/i;
       if (!expected.test(name)) return;
+      onMilestone?.('mutationResponseReceived');
       void (async () => {
         if (!response.ok()) { this.failed = true; return; }
         const raw = await response.body(); if (raw.byteLength > 8 * 1024 * 1024) return;
+        onMilestone?.('mutationBodyRead');
         const records = parseRecords(raw.toString('utf8'));
         const nodes: { type: string; keys: string[] }[] = [], stack = records.map((r: any) => r?.data); let visited = 0;
         while (stack.length && ++visited < 10000 && nodes.length < 15) {
@@ -119,6 +121,7 @@ export class FacebookActions implements ActionAdapter {
     hooks.signal.throwIfAborted();
     if (!this.account || this.account.id !== job.accountId) throw Error('ACTOR_CHANGED');
     const page = this.pages.get(name); if (!page || page.isClosed()) throw Error('STOPPED');
+    hooks.onImplementation?.('action-timing-v2');
     // Install only immediately before submitting, then remove before read-back navigation.
     // Routing disables HTTP cache, so it must not cover initial page/composer rendering.
     const writeGuard = async (route: Route) => {
@@ -126,6 +129,11 @@ export class FacebookActions implements ActionAdapter {
       if (request.method() === 'POST' && body) {
         if (!mutationActorAllowed(new URLSearchParams(body), job.accountId)) { await route.abort('blockedbyclient'); return; }
         const form = new URLSearchParams(body);
+        const expectedMutation = name === 'comment' ? /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i
+          : name === 'like' ? /(?:React|Reaction|Like)/i : /(?:StoryCreate|CreateStory|Share)/i;
+        const operation = form.get('fb_api_req_friendly_name') || '';
+        if (/Mutation$/.test(operation) && expectedMutation.test(operation) && form.get('__user') === job.accountId)
+          hooks.onMilestone?.('mutationRequestObserved');
         if (name === 'comment' && /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i.test(form.get('fb_api_req_friendly_name') || '')) {
           const proof = commentRequestProof(form, job, original.feedbackIds);
           if (!proof.commentRequestCompatible) {
@@ -155,13 +163,14 @@ export class FacebookActions implements ActionAdapter {
       if (likeCount === 1 && await candidate.getByRole('button', { name: COMMENT }).count() === 1) { bar = candidate; break; }
     }
     if (!bar) throw Error('UI_UNSUPPORTED');
-    const observation = new MutationObserver(page, name, job, original.feedbackIds, hooks.onServerResponse);
+    const observation = new MutationObserver(page, name, job, original.feedbackIds, hooks.onServerResponse, hooks.onMilestone);
     const send = async (control: Locator, keyboard = false) => {
       stage('prepare_submission');
       hooks.signal.throwIfAborted(); await activeAccount(page, job.accountId);
       await page.route('https://www.facebook.com/api/graphql/', writeGuard);
       hooks.beforeSubmit(); hooks.signal.throwIfAborted(); observation.armed = true; stage('submit');
       if (keyboard) await control.press('Enter'); else await control.click({ timeout: 8000 });
+      hooks.onMilestone?.('submitControlFinished');
       stage('wait_server');
     };
     const confirmed = async () => {

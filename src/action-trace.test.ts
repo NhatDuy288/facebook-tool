@@ -5,6 +5,7 @@ import { ActionTrace } from './action-trace.ts';
 test('action trace keeps independent steps, live snapshots and first response milestones', () => {
   let now = 100;
   const trace = new ActionTrace(now, () => now);
+  trace.label('share-opening-adaptive-v1'); trace.label('ignored-overwrite');
   trace.enter('navigate_original_post'); now += 800;
   trace.enter('verify_original_post'); now += 25;
   trace.enter('prepare_submission'); now += 10;
@@ -17,6 +18,7 @@ test('action trace keeps independent steps, live snapshots and first response mi
   now += 100; trace.mark('serverConfirmed'); trace.enter('share_readback_navigate');
   now += 900; trace.finish();
   const final = trace.snapshot();
+  assert.equal(final.implementation, 'share-opening-adaptive-v1');
   assert.equal(final.milestones.serverConfirmed, 865, 'later events cannot move the first confirmation');
   assert.equal(final.finishedMs, 1865);
   assert.equal(final.steps.reduce((sum, step) => sum + step.endMs - step.startMs, 0), 1865);

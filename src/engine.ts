@@ -242,6 +242,7 @@ export class Engine {
     };
     try {
       const result = await this.adapter.execute(name, job, { signal,
+        onMilestone: milestone => trace.mark(milestone), onImplementation: implementation => trace.label(implementation),
         onStage: stage => trace.enter(stage),
         onServerResponse: kind => trace.mark(kind === 'confirmed' ? 'serverConfirmed' : 'serverAcknowledged'),
         onServerConfirmed: result => this.store.evidence(job.id, name, result), beforeSubmit: () => {

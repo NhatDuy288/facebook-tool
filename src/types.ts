@@ -26,9 +26,10 @@ export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_
   | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
   | 'share_readback_navigate' | 'share_readback_verify' | 'share_readback_scope'
   | 'share_readback_audience' | 'share_verify_response' | 'share_verify_current_page' | 'cleanup';
-export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed';
+export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed'
+  | 'mutationRequestObserved' | 'mutationResponseReceived' | 'mutationBodyRead' | 'submitControlFinished';
 export type ActionTraceStep = { stage: ActionStage; startMs: number; endMs: number; status: 'completed' | 'running' | 'interrupted' };
-export type ActionTraceData = { version: 1; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
+export type ActionTraceData = { version: 1; implementation?: string; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
   finishedMs: number | null };
 export type Account = { id: string; name: string };
 export type ActionState = 'ready' | 'preparing' | 'submitting' | 'succeeded' | 'failed' | 'unknown' | 'cancelled' | 'simulated' | 'skipped';
@@ -41,7 +42,8 @@ export type LogEntry = { id: number; at: string; level: 'info' | 'warning' | 'er
 export type Reader = { prepare(target: Config['target'], signal: AbortSignal): Promise<Account>;
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
 export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
-  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
+  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void;
+  onMilestone?: (milestone: ActionMilestone) => void; onImplementation?: (implementation: string) => void };
 export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string;
   shareProof?: { identityVerified: boolean; audience: 'only_me' | 'public' | null } };
 export type ActionAdapter = { prepare(account: Account): Promise<void>;
