@@ -5,11 +5,11 @@ import { FacebookReader } from './reader.ts';
 import { BrowserSession } from './browser.ts';
 import { READ_TARGETS } from './feed/read-target.ts';
 
-function fixture(expanded: boolean) {
+function fixture(expanded: boolean, wrongActor = false) {
   const source = READ_TARGETS['test-profile'], sent: URLSearchParams[] = [];
   const records = (ids: string[]) => [{ data: { node: { id: source.sourceId, timeline_list_feed_units: {
     edges: ids.map(id => ({ node: { __typename: 'Story', id: 'story-' + id, post_id: id,
-      creation_time: expanded && id === '4' ? 1794217999 : 1794217900 - Number(id), actors: [{ id: source.sourceId }],
+      creation_time: expanded && id === '4' ? 1794217999 : 1794217900 - Number(id), actors: [{ id: wrongActor && id === '1' ? '999' : source.sourceId }],
       ...(expanded && id === '1' ? { is_pinned: true } : {}) } })),
     page_info: { has_next_page: true, end_cursor: 'actual-source-cursor' } } } }, extensions: { is_final: true } }];
   const page = { isClosed: () => false, url: () => source.url, evaluate: async (_fn: unknown, args: any) => {
@@ -38,6 +38,19 @@ test('production reader sends three to Facebook and displays only source-verifie
   assert.equal(sent[0].get('fb_dtsg'), 'fresh-test-value');
   assert.equal(result.posts.length, 3); assert.equal(result.verifiedPosts!.length, 3);
   assert.deepEqual(result.windowPolicy, { requestedCount: 3, verifiedCount: 3, expanded: false, expansionReason: null });
+  assert.equal(result.scanBatches![0].httpStatus, 200);
+  assert.deepEqual(result.scanBatches![0].posts.map(p => p.post_id), ['1','2','3']);
+  assert.equal(result.scanBatches![0].parser!.mainTimelineEdgesObserved, 3);
+  assert.doesNotMatch(JSON.stringify(result.scanBatches), /fresh-test-value|captured-old-cursor|actual-source-cursor/);
+});
+
+test('reader retains safe parser rejection evidence without accepting the rejected story', async () => {
+  const { reader, sent } = fixture(false, true), result = await reader.read(new AbortController().signal);
+  assert.equal(sent.length, 1); assert.equal(result.usable, false); assert.equal(result.reasonCode, 'UNVERIFIED_WINDOW');
+  assert.equal(result.verifiedPosts!.length, 0);
+  assert.deepEqual(result.scanBatches![0].posts.map(p => p.post_id), ['2','3']);
+  const rejected = result.scanBatches![0].parser!.rejectedEdges;
+  assert.ok(rejected.some(edge => edge.observedPostIds.includes('1') && edge.classification === 'missing_or_conflicting_source_identity'));
 });
 
 test('expanded reader retains all verified posts for detection while displaying three ordered by original publication time', async () => {

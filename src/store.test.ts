@@ -6,6 +6,7 @@ import { join, isAbsolute } from 'node:path';
 import { Store } from './store.ts';
 import { DEFAULT_CONFIG } from './config.ts';
 import type { Post, JobTiming, ActionTiming } from './types.ts';
+import { SCAN_SNAPSHOT_LIMIT, type ScanDecision, type ScanSnapshot } from './scan-history.ts';
 const post = (id: string, time = 101): Post => ({ post_id: id, creation_time: time, permalink: null, sourceVerification: 'owning_profile' });
 function fixture(path = ':memory:') {
   const store = new Store(path), config = store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
@@ -14,6 +15,37 @@ function fixture(path = ':memory:') {
   return { store, input: { accountId: '10', sourceId: '20', sessionId, floor: 100, serverNow: 120,
     previous: new Set(baseline.map(p => p.post_id)), posts: [post('6'), ...baseline.slice(0, 4)], config } };
 }
+
+test('scan decisions follow the actual dedupe and time checks without changing acceptance', () => {
+  const f = fixture(), decisions: ScanDecision[] = [];
+  try {
+    const jobs = f.store.acceptWindow({ ...f.input, posts: [post('1', 90), post('7', 99), post('6')], onDecision: decision => decisions.push(decision) });
+    assert.deepEqual(decisions.map(d => d.reason), ['previous_window', 'older_than_session', 'accepted']);
+    assert.equal(decisions[2].jobId, jobs[0].id);
+    decisions.length = 0;
+    assert.equal(f.store.acceptWindow({ ...f.input, previous: new Set(), posts: [post('6')], onDecision: decision => decisions.push(decision) }).length, 0);
+    assert.equal(decisions[0].reason, 'already_seen');
+    decisions.length = 0;
+    assert.throws(() => f.store.acceptWindow({ ...f.input, posts: [post('8', 999)], onDecision: decision => decisions.push(decision) }), /POST_TIME_INVALID/);
+    assert.equal(decisions[0].reason, 'future_time'); assert.equal(f.store.jobs().length, 1);
+  } finally { f.store.close(); }
+});
+
+test('scan snapshots persist separately from job/status data with bounded retention', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'facebook-tool-scan-')), path = join(dir, 'test.sqlite');
+  const snapshot: ScanSnapshot = { version: 1, capacity: 60, context: { sessionId: null, accountId: null, sourceId: '20', serverFloor: null }, reads: [] };
+  try {
+    const f = fixture(path), [job] = f.store.acceptWindow(f.input);
+    for (let i = 0; i <= SCAN_SNAPSHOT_LIMIT; i++) f.store.saveScanSnapshot('detection', job.id, snapshot);
+    assert.equal(f.store.scanSnapshots(1000).length, SCAN_SNAPSHOT_LIMIT);
+    assert.equal(f.store.scanSnapshots(1)[0].jobId, job.id);
+    assert.equal('scanHistory' in f.store.job(job.id)!, false);
+    f.store.close();
+    const reopened = new Store(path);
+    try { assert.deepEqual(reopened.scanSnapshots(1)[0].snapshot, snapshot); }
+    finally { reopened.close(); }
+  } finally { assert.ok(isAbsolute(dir) && dir.startsWith(join(tmpdir(), 'facebook-tool-scan-'))); rmSync(dir, { recursive: true, force: true }); }
+});
 test('durable dedupe outlives the five-post window and preserves assigned contents', () => {
   const f = fixture();
   const [j] = f.store.acceptWindow(f.input);

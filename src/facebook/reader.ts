@@ -1,5 +1,6 @@
 // Reuse the verified, fail-closed parser/transport. Request templates and tokens stay in RAM.
 import { READ_WINDOW_SIZE } from '../config.ts';
+import { scanBatches } from '../scan-history.ts';
 import type { Page, Response } from 'playwright-core';
 import { performance } from 'node:perf_hooks';
 import { BrowserSession, activeAccount } from './browser.ts';
@@ -101,7 +102,12 @@ export class FacebookReader implements Reader {
         expanded: result.windowSize > READ_WINDOW_SIZE, expansionReason: result.expansionReason }, usable: result.usable, reasonCode: result.reasonCode, serverSeconds: result.serverSeconds,
       firstSeenAt: result.firstSeenAt, observations: result.observations,
       queryPOSTsIssued: result.queryPOSTsIssued, queryMs: Math.round(performance.now() - started),
-      decodedBodyBytes: result.batches.reduce((sum, b) => sum + b.decodedBodyBytes, 0) };
+      decodedBodyBytes: result.batches.reduce((sum, b) => sum + b.decodedBodyBytes, 0),
+      scanBatches: scanBatches(result.batches.map(batch => ({ ...batch, parser: batch.inspection ? {
+        mainTimelineEdgesObserved: batch.inspection.window.mainTimelineEdgesObserved,
+        parentSourceConflict: batch.inspection.window.parentSourceConflict, poisonedPostIds: batch.inspection.window.poisonedPostIds,
+        unsupportedPatchCount: batch.inspection.window.unsupportedMainTimelinePatchPaths.length,
+        rejectedEdges: batch.inspection.window.rejectedEdges.map((edge: any) => ({ observedPostIds: edge.observedPostIds ?? [], classification: edge.classification })) } : null }))) };
   }
 }
 async function proveOperation(page: Page, observed: ObservedContinuation) {

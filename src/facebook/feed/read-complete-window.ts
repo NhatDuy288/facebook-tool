@@ -23,6 +23,7 @@ export type PostObservation = { observedAt: string; observedMonoMs?: number; pub
 export type SafeWindowBatch = { batchIndex: number; requestedCount: number; requestedStreamCount: number | null;
   returnedPostCount: number; selectedPostCount: number; queryMs: number; httpStatus: number; decodedBodyBytes: number;
   responseComplete: boolean; usable: boolean; reasonCode: string | null; posts: AuthPost[]; markerMatchIds: string[];
+  requestStartedAt?: number | null; headersReceivedAt?: number | null;
   hasNextPage: boolean | null; endCursorPresent: boolean; serverSeconds: number | null; inspection: AuthWindowResult['safeInspection'] };
 export type CompleteWindowResult = AuthWindowResult & { serverSeconds: number | null; firstSeenAt: string;
   observations: Record<string, PostObservation>;
@@ -161,7 +162,8 @@ export async function readCompleteWindow(page: Page, headForm: URLSearchParams,
       requestedStreamCount: Number.isSafeInteger(variables.stream_count) ? variables.stream_count : null,
       returnedPostCount: 0, selectedPostCount: 0, queryMs: 0, httpStatus: response.status(), decodedBodyBytes: 0,
       responseComplete: false, usable: false, reasonCode: null, posts: [], markerMatchIds: [],
-      hasNextPage: null, endCursorPresent: false, serverSeconds: null, inspection: null };
+      hasNextPage: null, endCursorPresent: false, serverSeconds: null, inspection: null,
+      requestStartedAt: response.timing?.requestStartedAt ?? null, headersReceivedAt: response.timing?.headersReceivedAt ?? null };
     batches.push(batch);
     try {
       if (response.status() === 429) { batch.reasonCode = 'RATE_LIMIT'; return finish(batch.reasonCode); }

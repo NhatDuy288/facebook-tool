@@ -71,6 +71,12 @@ Lượt cũ có bước submit hoàn tất dùng mốc kết thúc thao tác g�
 
 Giờ máy được hiệu chỉnh theo phản hồi Facebook; các khoảng xử lý dùng đồng hồ đơn điệu. Cấu hình 2 giây là khoảng chờ sau khi lượt đọc trước kết thúc, nên chu kỳ thực tế còn cộng thời gian đọc.
 
+Chẩn đoán phát hiện chậm: tool giữ **60 lượt quét gần nhất trong RAM**, gồm giờ bắt đầu/kết thúc, thời điểm gửi/nhận phản hồi, ID và giờ đăng bài, kết quả xác minh và lý do nhận/bỏ qua. Bài có trong phản hồi nhưng bị từ chối được phân biệt với bài chưa có trong tập đã đọc. Mỗi lượt vẫn dùng đúng yêu cầu đọc hiện tại, không thêm tải trang hay yêu cầu mạng.
+
+Khi nhận bài mới, tool giữ bản chụp lịch sử và lưu vào SQLite **sau khi các nhánh thao tác kết thúc**; lỗi đọc được lưu khi không có thao tác đang chạy, và khi dừng sẽ lưu lịch sử gần nhất. Tối đa 80 bản chụp; các lượt bình thường không ghi thêm chẩn đoán xuống đĩa. Khởi động phiên mới xóa vòng RAM, các bản đã lưu vẫn còn. Nếu tiến trình bị đóng đột ngột trước lúc lưu, bản đang chờ có thể mất. Dữ liệu chẩn đoán không chứa cookie, token, cursor hay phản hồi thô; không đưa lên GitHub.
+
+Xuất lịch sử bằng `node scripts/export-scan-history.mjs`; kết quả nằm trong `data/scan-history-*.json`. Khi tool tắt, lệnh đọc các bản chụp đã lưu bằng SQLite chỉ đọc. API cục bộ `/api/scan-history` dùng cùng khóa xác thực với bảng điều khiển và không được tải kèm mỗi lần UI cập nhật trạng thái.
+
 ## Dữ liệu riêng và chuyển máy
 
 Không đưa `data/`, `sources.local.json`, cookie, hồ sơ trình duyệt hoặc log lên GitHub. `.gitignore` đã loại các mục này.

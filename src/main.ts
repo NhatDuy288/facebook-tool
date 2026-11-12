@@ -57,6 +57,9 @@ const server = createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/api/status') {
     reply(200, { ...engine.status(), sources: READ_TARGETS, browser: { channel: browser.channel, sessionSaved: store.config().keepSession }, closing }); return;
   }
+  if (request.method === 'GET' && request.url === '/api/scan-history') {
+    reply(200, engine.scanDiagnostics()); return;
+  }
   if (request.method !== 'POST' || request.headers.origin !== origin || closing) { reply(403, {}); return; }
   try {
     const chunks: Buffer[] = []; let bytes = 0;

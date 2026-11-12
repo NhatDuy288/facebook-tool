@@ -29,6 +29,59 @@ class FakeActions implements ActionAdapter {
   async stop(){this.barrier?.();} async close(){}
 }
 
+test('scan history distinguishes absence, rejected batches and acceptance; detection is saved only after actions finish', async () => {
+  const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test', pollSeconds: 1 });
+  let release!: () => void, entered = 0, saves = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const save = store.saveScanSnapshot.bind(store);
+  store.saveScanSnapshot = (...args) => { saves++; save(...args); };
+  const fresh = post('6', 111);
+  const rejected: WindowRead = { ...read([fresh, ...old.slice(0, 2)]), usable: false, reasonCode: 'FINAL_FRAME_REQUIRED',
+    scanBatches: [{ batchIndex: 0, requestedCount: 3, returnedPostCount: 3, selectedPostCount: 0,
+      queryMs: 100, httpStatus: 200, decodedBodyBytes: 500, responseComplete: true, usable: false,
+      reasonCode: 'FINAL_FRAME_REQUIRED', serverSeconds: 112, posts: [fresh, ...old.slice(0, 2)] }] };
+  const reader = new FakeReader([read(), read(), read(), rejected, { ...read([fresh, ...old.slice(0, 2)]), serverSeconds: 112 }]);
+  const adapter: ActionAdapter = { async prepare() {}, async close() {}, async stop() { release(); },
+    async execute(_name, _job, hooks) { entered++; await gate; hooks.beforeSubmit(); hooks.onSubmitted?.(); return { code: 'TEST_CONFIRMED' }; } };
+  const engine = new Engine(store, reader, adapter);
+  try {
+    engine.start(); await until(() => reader.reads >= 3);
+    assert.equal(saves, 0, 'ordinary polls only retain RAM evidence');
+    await until(() => entered === 3, 5000);
+    assert.equal(store.jobs().length, 1);
+    assert.equal(store.scanSnapshots().filter(s => s.trigger === 'detection').length, 0);
+    assert.equal(engine.pendingScanSnapshots.length, 1);
+    release(); await until(() => !engine.activeJob);
+    const saved = store.scanSnapshots().find(s => s.trigger === 'detection')!;
+    assert.equal(saved.jobId, store.jobs()[0].id);
+    const scans = saved.snapshot.reads.filter(r => r.purpose === 'watch');
+    assert.equal(scans.length, 3);
+    assert.equal(scans[0].verifiedPosts.some(p => p.post_id === '6'), false);
+    assert.ok(scans[0].selection.decisions.every(d => d.reason === 'previous_window'));
+    assert.equal(scans[1].outcome, 'rejected'); assert.equal(scans[1].readerReasonCode, 'FINAL_FRAME_REQUIRED');
+    assert.equal(scans[1].batches[0].posts[0].post_id, '6'); assert.equal(scans[1].selection.state, 'not_run');
+    assert.equal(scans[2].selection.state, 'committed');
+    assert.equal(scans[2].selection.decisions.find(d => d.postId === '6')!.reason, 'accepted');
+    assert.equal(store.jobs()[0].actions.every(a => a.state === 'succeeded'), true);
+    assert.equal(engine.status().scanHistory.retained, 5);
+    assert.equal('reads' in engine.status().scanHistory, false, 'full history is not repeatedly sent with dashboard status');
+  } finally { await engine.close(); store.close(); }
+});
+
+test('scan selection diagnostics mark rolled-back decisions when a later post invalidates the transaction', async () => {
+  const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'dry-run', pollSeconds: 1 });
+  const reader = new FakeReader([read(), read(), { ...read([post('6', 111), post('7', 999), old[0]]), serverSeconds: 112 }]);
+  const engine = new Engine(store, reader, new FakeActions());
+  try {
+    engine.start(); await until(() => engine.consecutiveErrors === 1);
+    const saved = store.scanSnapshots(1)[0].snapshot.reads.at(-1)!;
+    assert.equal(saved.outcome, 'valid'); assert.equal(saved.selection.state, 'rolled_back');
+    assert.equal(saved.selection.errorCode, 'POST_TIME_INVALID');
+    assert.deepEqual(saved.selection.decisions.map(d => d.reason), ['accepted', 'future_time']);
+    assert.equal(store.jobs().length, 0); assert.equal(store.hasSeen('10', READ_TARGETS['test-profile'].sourceId, '6'), false);
+  } finally { await engine.close(); store.close(); }
+});
+
 test('two-second three-post monitoring retains expanded baseline IDs and never treats resurfaced old posts as new', async () => {
   const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'dry-run' });
   const extras = [post('4', 90), post('5', 90)];

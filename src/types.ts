@@ -1,9 +1,10 @@
 import type { ActionName, Config, ContentPlan, Mode } from './config.ts';
+import type { ScanBatchEvidence } from './scan-history.ts';
 export type Post = { post_id: string; creation_time: number; permalink: string | null; sourceVerification: string };
 export type WindowRead = { posts: Post[]; verifiedPosts?: Post[];
   windowPolicy?: { requestedCount: number; verifiedCount: number; expanded: boolean; expansionReason: string | null }; usable: boolean; reasonCode: string | null; serverSeconds: number | null;
   firstSeenAt: string; queryPOSTsIssued: number; queryMs: number; decodedBodyBytes: number;
-  observations?: Record<string, PostObservation>; readTiming?: ReadTiming };
+  observations?: Record<string, PostObservation>; readTiming?: ReadTiming; scanBatches?: ScanBatchEvidence[] };
 export type PostObservation = { observedAt: string; observedMonoMs?: number; publicationDelayMs: number | null;
   uncertaintyMs: number | null; clockOffsetMs: number | null; clockSource: 'facebook-response' | 'unavailable' };
 export type ReadTiming = { startedAt: string; completedAt: string; startedMonoMs: number; completedMonoMs: number;

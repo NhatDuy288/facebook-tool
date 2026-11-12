@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { SCAN_SNAPSHOT_LIMIT, type ScanDecision, type ScanSnapshot } from './scan-history.ts';
 import { DEFAULT_CONFIG, validateConfig, planContent, ACTIONS, type Config, type ContentPlan, type ActionName } from './config.ts';
 import type { Job, Post, ActionResult, ActionState, LogEntry, JobTiming, ActionTiming } from './types.ts';
 const now = () => new Date().toISOString();
@@ -24,6 +25,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS job_timings (job_id TEXT PRIMARY KEY REFERENCES jobs(id), details_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS action_timings (job_id TEXT NOT NULL REFERENCES jobs(id), name TEXT NOT NULL,
         details_json TEXT NOT NULL, PRIMARY KEY(job_id,name));
+      CREATE TABLE IF NOT EXISTS scan_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+        trigger TEXT NOT NULL, job_id TEXT REFERENCES jobs(id), details_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS logs_at ON logs(at);`);
     if (!this.get('config')) this.set('config', DEFAULT_CONFIG);
     if (this.get('commentCursor') === null) this.set('commentCursor', 0);
@@ -57,14 +60,17 @@ export class Store {
     return !!this.db.prepare('SELECT 1 FROM seen WHERE account_id=? AND source_id=? AND post_id=?').get(accountId, sourceId, postId);
   }
   acceptWindow(input: { accountId: string; sourceId: string; sessionId: string; floor: number; serverNow: number;
-    posts: Post[]; previous: Set<string>; config: Config; timings?: Record<string, JobTiming> }): Job[] {
+    posts: Post[]; previous: Set<string>; config: Config; timings?: Record<string, JobTiming>; onDecision?: (decision: ScanDecision) => void }): Job[] {
     return this.transaction(() => {
       const ids: string[] = [];
       for (const post of input.posts) {
-        if (input.previous.has(post.post_id) || this.hasSeen(input.accountId, input.sourceId, post.post_id)) continue;
-        if (post.creation_time > input.serverNow + 2) throw Error('POST_TIME_INVALID');
-        if (post.creation_time < input.floor) { this.recordSeen(input.accountId, input.sourceId, post, input.sessionId, 'older_than_session'); continue; }
-        ids.push(this.insertJob(input.accountId, input.sourceId, input.sessionId, post, input.config, input.timings?.[post.post_id]));
+        const decide = (reason: ScanDecision['reason'], jobId?: string) => input.onDecision?.({ postId: post.post_id, reason, ...(jobId ? { jobId } : {}) });
+        if (input.previous.has(post.post_id)) { decide('previous_window'); continue; }
+        if (this.hasSeen(input.accountId, input.sourceId, post.post_id)) { decide('already_seen'); continue; }
+        if (post.creation_time > input.serverNow + 2) { decide('future_time'); throw Error('POST_TIME_INVALID'); }
+        if (post.creation_time < input.floor) { this.recordSeen(input.accountId, input.sourceId, post, input.sessionId, 'older_than_session'); decide('older_than_session'); continue; }
+        const id = this.insertJob(input.accountId, input.sourceId, input.sessionId, post, input.config, input.timings?.[post.post_id]);
+        ids.push(id); decide('accepted', id);
         this.recordSeen(input.accountId, input.sourceId, post, input.sessionId, 'job_created');
       }
       this.db.prepare('UPDATE sessions SET window_json=? WHERE id=?').run(JSON.stringify(input.posts), input.sessionId);
@@ -133,6 +139,18 @@ export class Store {
     this.db.prepare('INSERT INTO logs(at,level,code,text,job_id) VALUES (?,?,?,?,?)').run(now(), level, code, text, jobId);
   }
   logs(limit = 100): LogEntry[] { return this.db.prepare('SELECT id,at,level,code,text,job_id AS jobId FROM logs ORDER BY id DESC LIMIT ?').all(limit) as any; }
+  saveScanSnapshot(trigger: 'detection' | 'read_error' | 'stop', jobId: string | null, snapshot: ScanSnapshot) {
+    const json = JSON.stringify(snapshot);
+    this.transaction(() => {
+      this.db.prepare('INSERT INTO scan_snapshots(at,trigger,job_id,details_json) VALUES (?,?,?,?)').run(now(), trigger, jobId, json);
+      this.db.prepare('DELETE FROM scan_snapshots WHERE id NOT IN (SELECT id FROM scan_snapshots ORDER BY id DESC LIMIT ?)').run(SCAN_SNAPSHOT_LIMIT);
+    });
+  }
+  scanSnapshots(limit = 5) {
+    return (this.db.prepare('SELECT id,at,trigger,job_id,details_json FROM scan_snapshots ORDER BY id DESC LIMIT ?')
+      .all(Math.min(SCAN_SNAPSHOT_LIMIT, Math.max(1, limit))) as any[]).map(row => ({ id: row.id, at: row.at,
+        trigger: row.trigger, jobId: row.job_id, snapshot: JSON.parse(row.details_json) as ScanSnapshot }));
+  }
   pruneLogs() { this.db.prepare("DELETE FROM logs WHERE at < ?").run(new Date(Date.now() - 30 * 86400_000).toISOString()); }
   close() { this.db.close(); }
 }

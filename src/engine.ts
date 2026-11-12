@@ -5,6 +5,7 @@ import { READ_TARGETS } from './facebook/feed/read-target.ts';
 import { Store } from './store.ts';
 import { errorCode, message } from './errors.ts';
 import { ActionTrace } from './action-trace.ts';
+import { ScanHistory, type ScanRecord, type ScanSnapshot } from './scan-history.ts';
 import type { Reader, ActionAdapter, Account, WindowRead, Post, Job, JobTiming, ActionTiming, ReadTiming, ActionPreparation } from './types.ts';
 export type Phase = 'idle' | 'initializing' | 'ready' | 'watching' | 'stopping' | 'error';
 export class Engine {
@@ -18,6 +19,8 @@ export class Engine {
   stoppingTask: Promise<void> | null = null;
   queue: string[] = []; closed = false;
   lastReadTiming: ReadTiming | null = null;
+  scanHistory = new ScanHistory();
+  pendingScanSnapshots: { trigger: 'detection' | 'read_error' | 'stop'; jobId: string | null; snapshot: ScanSnapshot }[] = [];
   jobClocks = new Map<string, { referenceMono: number; requestedMono: number; readCompletedMono: number; origin: 'watch' | 'existing-test'; publicationDelayMs: number | null; uncertaintyMs: number | null }>();
   activeTraces = new Map<string, { trace: ActionTrace; timing: ActionTiming }>();
   constructor(store: Store, reader: Reader, adapter: ActionAdapter) { this.store = store; this.reader = reader; this.adapter = adapter; }
@@ -33,6 +36,7 @@ export class Engine {
         lastPollWaitMs: this.lastReadTiming?.waitMs ?? null,
         facebookClockOffsetMs: observation?.clockOffsetMs ?? null, clockUncertaintyMs: observation?.uncertaintyMs ?? null,
         errors: this.consecutiveErrors, nodeMemoryMB: Math.round(process.memoryUsage().rss / 1048576) },
+      scanHistory: { ...this.scanHistory.summary(), pendingSnapshots: this.pendingScanSnapshots.length },
       activeJob: this.activeJob, queuedJobs: this.queue.length, jobs: this.store.jobs().map(job => ({ ...job,
         actions: job.actions.map(action => {
           const active = this.activeTraces.get(job.id + ':' + action.name);
@@ -50,6 +54,25 @@ export class Engine {
     return result;
   }
   async openLogin() { await this.reader.openLogin(); }
+  scanSnapshot(): ScanSnapshot {
+    return this.scanHistory.snapshot({ sessionId: this.sessionId, accountId: this.account?.id ?? null,
+      sourceId: READ_TARGETS[this.store.config().target].sourceId, serverFloor: this.floor });
+  }
+  scanDiagnostics() { return { recent: this.scanSnapshot(), saved: this.store.scanSnapshots() }; }
+  rememberScanSnapshot(trigger: 'detection' | 'read_error' | 'stop', jobId: string | null = null) {
+    if (!this.scanHistory.latest) return;
+    this.pendingScanSnapshots.push({ trigger, jobId, snapshot: this.scanSnapshot() });
+    // A bounded queue also covers a long-running interaction while reads keep failing.
+    if (this.pendingScanSnapshots.length > 80) this.pendingScanSnapshots.shift();
+  }
+  flushScanSnapshots() {
+    // Diagnostics never add a synchronous disk write before/during an interaction.
+    if (this.activeJob) return;
+    for (const pending of this.pendingScanSnapshots.splice(0)) {
+      try { this.store.saveScanSnapshot(pending.trigger, pending.jobId, pending.snapshot); }
+      catch { try { this.store.log('warning', 'SCAN_HISTORY_SAVE_FAILED', 'Không lưu được lịch sử quét chẩn đoán.'); } catch { /* Must not alter action state. */ } }
+    }
+  }
   baseline(): void {
     if (this.closed || this.busy()) throw Error('BUSY');
     this.workTask = this.initialize().catch(e => this.fail(e));
@@ -64,7 +87,7 @@ export class Engine {
     this.sessionId = null; this.floor = null; this.window = []; this.lastRead = null; this.account = null;
     this.readCount = 0; this.queryCount = 0; this.bytesRead = 0; this.consecutiveErrors = 0;
     this.nextReadAt = null;
-    this.lastReadTiming = null; this.jobClocks.clear();
+    this.lastReadTiming = null; this.jobClocks.clear(); this.flushScanSnapshots(); this.scanHistory.clear();
     const config = this.store.config();
     this.account = await this.reader.prepare(config.target, signal); signal.throwIfAborted();
     if (config.mode !== 'dry-run') await this.adapter.prepare(this.account);
@@ -89,8 +112,10 @@ export class Engine {
       const waitMs = this.store.config().pollSeconds * 1000;
       this.nextReadAt = new Date(Date.now() + waitMs).toISOString();
       await delay(waitMs, undefined, { signal }); this.nextReadAt = null;
+      let scan: ScanRecord | undefined;
       try {
         const read = await this.readChecked(signal); signal.throwIfAborted();
+        scan = this.scanHistory.latest;
         const config = this.store.config();
         const requestedAt = new Date().toISOString(), requestedMono = performance.now();
         const timings: Record<string, JobTiming> = {};
@@ -103,10 +128,14 @@ export class Engine {
             previousReadCompletedAt: this.previousReadCompletedAt,
             readDurationMs: trace.durationMs, readIntervalMs: trace.intervalMs, pollWaitMs: trace.waitMs, pollSeconds: trace.pollSeconds };
         }
+        if (scan) scan.selection.state = 'pending';
         const jobs = this.store.acceptWindow({ accountId: this.account!.id, sourceId: READ_TARGETS[config.target].sourceId,
           sessionId: this.sessionId!, floor: this.floor!, serverNow: read.serverSeconds!,
-          posts: read.verifiedPosts ?? read.posts, previous: new Set(this.window.map(p => p.post_id)), config, timings });
+          posts: read.verifiedPosts ?? read.posts, previous: new Set(this.window.map(p => p.post_id)), config, timings,
+          onDecision: decision => { scan?.selection.decisions.push(decision); } });
+        if (scan) scan.selection.state = 'committed';
         this.window = read.posts; this.consecutiveErrors = 0; this.note = 'Đang theo dõi bài mới bằng đọc nền.';
+        for (const job of jobs) this.rememberScanSnapshot('detection', job.id);
         for (const job of jobs) {
           const observed = read.observations?.[job.post.post_id];
           this.jobClocks.set(job.id, { referenceMono: observed?.observedMonoMs ?? read.readTiming!.completedMonoMs,
@@ -116,9 +145,12 @@ export class Engine {
             `Nhận bài mới ${job.post.post_id}; ${job.mode === 'dry-run' ? 'đã ghi thao tác dự kiến' : 'đã lưu nội dung và công việc'}.`, job.id);
           if (job.mode !== 'dry-run') this.enqueue(job.id);
         }
+        this.flushScanSnapshots();
       } catch (error) {
         if (signal.aborted) throw error;
         const code = errorCode(error); this.consecutiveErrors++;
+        if (scan?.selection.state === 'pending') { scan.selection.state = 'rolled_back'; scan.selection.errorCode = code; }
+        this.rememberScanSnapshot('read_error'); this.flushScanSnapshots();
         if (code === 'DATABASE_FAILED') throw error;
         this.note = message(code) + ` Lỗi liên tiếp: ${this.consecutiveErrors}/3.`;
         this.store.log('warning', code, this.note);
@@ -129,34 +161,38 @@ export class Engine {
   previousReadCompletedAt: string | null = null;
   async readChecked(signal: AbortSignal): Promise<WindowRead> {
     const previous = this.lastReadTiming, startedAt = new Date().toISOString(), startedMonoMs = performance.now();
-    let read: WindowRead;
-    try { read = await this.reader.read(signal); }
-    finally {
-      const completedMonoMs = performance.now(), completedAt = new Date().toISOString();
-      this.previousReadCompletedAt = previous?.completedAt ?? null;
-      this.lastReadTiming = { startedAt, completedAt, startedMonoMs, completedMonoMs,
-        durationMs: completedMonoMs - startedMonoMs, intervalMs: previous ? startedMonoMs - previous.startedMonoMs : null,
-        waitMs: previous ? startedMonoMs - previous.completedMonoMs : null, pollSeconds: this.store.config().pollSeconds };
-    }
-    signal.throwIfAborted();
-    const { completedMonoMs, completedAt } = this.lastReadTiming!;
-    // A wall-clock correction during the read invalidates the clock calibration.
-    // Keep monotonic observation/processing measurements; never publish a skewed latency.
-    const wallElapsed = Date.parse(completedAt) - Date.parse(startedAt);
-    if (Math.abs(wallElapsed - (completedMonoMs - startedMonoMs)) > 250 && read.observations) {
-      read.observations = Object.fromEntries(Object.entries(read.observations).map(([id, observation]) => [id,
-        { ...observation, publicationDelayMs: null, uncertaintyMs: null, clockOffsetMs: null, clockSource: 'unavailable' as const }]));
-    }
-    read.readTiming = this.lastReadTiming!;
-    this.readCount++; this.queryCount += read.queryPOSTsIssued; this.bytesRead += read.decodedBodyBytes;
-    const verified = read.verifiedPosts ?? read.posts;
-    if (!read.usable || read.posts.length !== READ_WINDOW_SIZE || ![READ_WINDOW_SIZE, 5].includes(verified.length)
-      || new Set(read.posts.map(p => p.post_id)).size !== READ_WINDOW_SIZE
-      || new Set(verified.map(p => p.post_id)).size !== verified.length
-      || read.posts.some(p => !verified.some(v => v.post_id === p.post_id && v.creation_time === p.creation_time && v.sourceVerification === p.sourceVerification))) throw Error('UNUSABLE_WINDOW');
-    if (!Number.isSafeInteger(read.serverSeconds) || read.serverSeconds! < 1) throw Error('SERVER_TIME_REQUIRED');
-    if (verified.some(p => !/^\d+$/.test(p.post_id) || !Number.isSafeInteger(p.creation_time) || !p.sourceVerification)) throw Error('UNUSABLE_WINDOW');
-    this.lastRead = read; this.lastReadAt = completedAt; return read;
+    const purpose = this.phase === 'initializing' ? 'baseline' : 'watch';
+    let read: WindowRead | undefined, failure: string | null = null;
+    try {
+      try { read = await this.reader.read(signal); }
+      finally {
+        const completedMonoMs = performance.now(), completedAt = new Date().toISOString();
+        this.previousReadCompletedAt = previous?.completedAt ?? null;
+        this.lastReadTiming = { startedAt, completedAt, startedMonoMs, completedMonoMs,
+          durationMs: completedMonoMs - startedMonoMs, intervalMs: previous ? startedMonoMs - previous.startedMonoMs : null,
+          waitMs: previous ? startedMonoMs - previous.completedMonoMs : null, pollSeconds: this.store.config().pollSeconds };
+      }
+      signal.throwIfAborted();
+      const { completedMonoMs, completedAt } = this.lastReadTiming!;
+      // A wall-clock correction during the read invalidates the clock calibration.
+      // Keep monotonic observation/processing measurements; never publish a skewed latency.
+      const wallElapsed = Date.parse(completedAt) - Date.parse(startedAt);
+      if (Math.abs(wallElapsed - (completedMonoMs - startedMonoMs)) > 250 && read.observations) {
+        read.observations = Object.fromEntries(Object.entries(read.observations).map(([id, observation]) => [id,
+          { ...observation, publicationDelayMs: null, uncertaintyMs: null, clockOffsetMs: null, clockSource: 'unavailable' as const }]));
+      }
+      read.readTiming = this.lastReadTiming!;
+      this.readCount++; this.queryCount += read.queryPOSTsIssued; this.bytesRead += read.decodedBodyBytes;
+      const verified = read.verifiedPosts ?? read.posts;
+      if (!read.usable || read.posts.length !== READ_WINDOW_SIZE || ![READ_WINDOW_SIZE, 5].includes(verified.length)
+        || new Set(read.posts.map(p => p.post_id)).size !== READ_WINDOW_SIZE
+        || new Set(verified.map(p => p.post_id)).size !== verified.length
+        || read.posts.some(p => !verified.some(v => v.post_id === p.post_id && v.creation_time === p.creation_time && v.sourceVerification === p.sourceVerification))) throw Error('UNUSABLE_WINDOW');
+      if (!Number.isSafeInteger(read.serverSeconds) || read.serverSeconds! < 1) throw Error('SERVER_TIME_REQUIRED');
+      if (verified.some(p => !/^\d+$/.test(p.post_id) || !Number.isSafeInteger(p.creation_time) || !p.sourceVerification)) throw Error('UNUSABLE_WINDOW');
+      this.lastRead = read; this.lastReadAt = completedAt; return read;
+    } catch (error) { failure = signal.aborted ? 'STOPPED' : errorCode(error); throw error; }
+    finally { this.scanHistory.record(this.lastReadTiming!, purpose, read, failure); }
   }
   testExisting(postId: string): string {
     if (this.busy() || this.phase !== 'ready') throw Error('BUSY');
@@ -219,7 +255,7 @@ export class Engine {
           tabsMs: performance.now() - dispatchStarted };
         // Each worker owns a separate tab; all enabled actions enter together.
         await Promise.all(ACTIONS.map(name => this.perform(name, job, signal, preparation)));
-      } finally { await this.adapter.release?.(); this.activeJob = null; }
+      } finally { await this.adapter.release?.(); this.activeJob = null; this.flushScanSnapshots(); }
     }
   }
   async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation): Promise<void> {
@@ -271,7 +307,9 @@ export class Engine {
   }
   fail(error: unknown) {
     if (this.abort.signal.aborted) { if (this.phase !== 'error' && this.phase !== 'stopping') { this.phase = 'idle'; this.note = message('STOPPED'); } return; }
-    const code = errorCode(error); this.abort.abort(); this.queue = []; this.nextReadAt = null;
+    const code = errorCode(error);
+    if (this.phase === 'initializing') { this.rememberScanSnapshot('read_error'); this.flushScanSnapshots(); }
+    this.abort.abort(); this.queue = []; this.nextReadAt = null;
     this.phase = 'error'; this.note = message(code);
     try { this.store.log('error', code, this.note); } catch { this.note = message('DATABASE_FAILED'); }
     void this.adapter.stop();
@@ -286,6 +324,7 @@ export class Engine {
     this.abort.abort(); this.queue = []; this.nextReadAt = null;
     await this.adapter.stop();
     await Promise.allSettled([this.workTask, this.dispatchTask].filter(Boolean));
+    this.rememberScanSnapshot('stop'); this.flushScanSnapshots();
     this.phase = 'idle'; this.note = message('STOPPED');
     this.store.log('info', 'STOPPED', this.note);
   }
