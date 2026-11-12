@@ -72,7 +72,7 @@ test('source selection stays consistent across refresh, save and baseline/start 
   } finally { await browser.close(); }
 });
 
-test('timing tab measures from publication and only completes confirmed enabled actions', async () => {
+test('timing tab measures dispatch independently of confirmation and hides verification durations', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -82,15 +82,14 @@ test('timing tab measures from publication and only completes confirmed enabled 
     const published = Date.parse('2026-11-09T02:46:00Z');
     const at = (seconds: number) => new Date(published + seconds * 1000).toISOString();
     const localAt = (seconds: number) => at(seconds + 236);
-    const actionTime = (finished: number) => ({ version: 2, startedAt: localAt(5), finishedAt: localAt(finished),
+    const actionTime = (finished: number) => ({ version: 3, startedAt: localAt(5), finishedAt: localAt(finished), sentAt: localAt(finished),
       queueMs: 800, processingMs: (finished - 5) * 1000, fromDetectionMs: (finished - 4.2) * 1000,
       fromRequestMs: (finished - 4.2) * 1000, fromPublicationMs: finished * 1000, uncertaintyMs: 1100,
       preparation: { readRemainderMs: 600, dispatchWaitMs: 100, tabsMs: 100 },
       trace: { version: 1, finishedMs: (finished - 5) * 1000,
-        milestones: { submitStarted: 4000, serverConfirmed: (finished - 6) * 1000 },
-        steps: [{ stage: 'navigate_original_post', startMs: 0, endMs: 2000, status: 'completed' },
-          { stage: 'wait_server', startMs: 2000, endMs: (finished - 6) * 1000, status: 'completed' },
-          { stage: 'share_readback_verify', startMs: (finished - 6) * 1000, endMs: (finished - 5) * 1000, status: 'completed' }] } });
+        milestones: { submitStarted: 4000, submissionSent: (finished - 5) * 1000 },
+        steps: [{ stage: 'navigate_original_post', startMs: 0, endMs: 4000, status: 'completed' },
+          { stage: 'submit', startMs: 4000, endMs: (finished - 5) * 1000, status: 'completed' }] } });
     const complete = {
       id: 'timing-example', sourceId: '123456789', mode: 'test', createdAt: localAt(4.2), origin: 'watch',
       timing: { version: 2, origin: 'watch', requestedAt: localAt(4.2), detectedAt: localAt(4.2), publicationDelayMs: 4200,
@@ -136,17 +135,17 @@ test('timing tab measures from publication and only completes confirmed enabled 
     assert.match(await first.nth(3).innerText(), /^≈ 11,7 giây/);
     assert.match(await first.nth(4).innerText(), /^≈ 18,3 giây/);
     assert.match(await first.nth(5).innerText(), /^≈ 18,8 giây/);
-    assert.equal(await first.nth(6).innerText(), '≈ 18,8 giây\nComment xong cuối');
-    assert.equal(await rows.nth(1).locator('td').last().innerText(), '—\nĐang xử lý');
-    assert.equal(await rows.nth(2).locator('td').last().innerText(), '≈ 18,3 giây\nShare xong cuối');
-    assert.equal(await rows.nth(3).locator('td').last().innerText(), '—\nThiếu dữ liệu đo');
-    assert.equal(await rows.nth(4).locator('td').last().innerText(), '—\nChưa hoàn tất');
+    assert.equal(await first.nth(6).innerText(), '≈ 18,8 giây\nComment gửi cuối');
+    assert.equal(await rows.nth(1).locator('td').last().innerText(), '≈ 18,8 giây\nComment gửi cuối');
+    assert.equal(await rows.nth(2).locator('td').last().innerText(), '≈ 18,3 giây\nShare gửi cuối');
+    assert.equal(await rows.nth(3).locator('td').last().innerText(), '—\nThiếu mốc gửi');
+    assert.equal(await rows.nth(4).locator('td').last().innerText(), '—\nChưa ghi nhận gửi đủ');
     assert.equal(await rows.nth(5).locator('td').last().innerText(), '—\nChỉ ghi nhận');
     assert.equal(await rows.nth(6).locator('td').nth(2).innerText(), 'Thiếu dữ liệu đo');
     assert.equal(await rows.nth(6).locator('td').last().innerText(), '—\nThiếu dữ liệu đo');
     assert.equal(await rows.nth(7).locator('td').nth(2).innerText(), 'Thử bài có sẵn');
     assert.equal(await rows.nth(7).locator('td').last().innerText(), '—\nThử bài có sẵn');
-    assert.equal(await page.locator('.timing-slowest').count(), 2);
+    assert.equal(await page.locator('.timing-slowest').count(), 3);
     const invalid = await page.evaluate(job => (window as any).timingForJob(job), { ...complete,
       timing: { ...complete.timing, publicationDelayMs: null }, actions: complete.actions.map(a => ({ ...a, timing: { ...a.timing, fromPublicationMs: null } })) });
     assert.equal(invalid.detection, null);
@@ -155,26 +154,32 @@ test('timing tab measures from publication and only completes confirmed enabled 
     assert.match(await page.locator('.timing-diagnostics').first().innerText(), /Giờ máy nhanh hơn Facebook 3 phút 56 giây/);
     assert.doesNotMatch(await page.locator('.timing-diagnostics').first().innerText(), /Sai số|±/);
     const trace = page.locator('.timing-diagnostics').first().locator('.action-trace[data-action="share"]');
-    assert.match(await trace.innerText(), /Facebook xác nhận\n≈ 17,3 giây từ lúc đăng/);
-    assert.match(await trace.innerText(), /Tool xác minh xong\n≈ 18,3 giây từ lúc đăng/);
-    assert.match(await trace.innerText(), /Từ phản hồi Facebook đến xác minh xong: 1 giây/);
-    assert.equal(await trace.locator('.trace-table tbody tr').count(), 3);
+    assert.match(await trace.innerText(), /Đã phát yêu cầu\n≈ 18,3 giây từ lúc đăng/);
+    assert.doesNotMatch(await trace.innerText(), /Facebook xác nhận|Tool xác minh xong|Chờ và đọc phản hồi|Tải bài vừa chia sẻ/);
+    assert.equal(await trace.locator('.trace-table tbody tr').count(), 2);
     assert.equal(await trace.locator('.trace-longest').count(), 1);
-    assert.match(await trace.locator('.trace-longest').innerText(), /Chờ và đọc phản hồi Facebook/);
-    const acknowledgement = await page.evaluate(input => {
-      const job: any = structuredClone(input), comment = job.actions.find((a: any) => a.name === 'comment');
-      comment.timing.trace.milestones.serverAcknowledged = comment.timing.trace.milestones.serverConfirmed;
-      delete comment.timing.trace.milestones.serverConfirmed;
-      const view = (window as any).renderActionTrace('comment', (window as any).timingForJob(job));
-      return view.querySelector('.trace-milestones').textContent;
-    }, complete);
-    assert.match(acknowledgement, /Facebook phản hồi · cần kiểm tra/);
-    assert.doesNotMatch(acknowledgement, /Facebook xác nhận/);
+    assert.match(await trace.locator('.trace-longest').innerText(), /Bấm gửi/);
     const unverified = await page.evaluate(input => {
       const job: any = structuredClone(input); job.actions.find((a: any) => a.name === 'share').state = 'unknown';
-      return (window as any).renderActionTrace('share', (window as any).timingForJob(job)).querySelector('.trace-milestones').textContent;
+      return (window as any).timingForJob(job);
     }, complete);
-    assert.match(unverified, /Tool xác minh xong—/);
+    assert.equal(unverified.total, 18.8, 'verification failure does not move or erase a dispatched request');
+    const attempt = await page.evaluate(input => {
+      const job: any = structuredClone(input), action = job.actions.find((a: any) => a.name === 'share');
+      action.timing.sentAt = null; delete action.timing.trace.milestones.submissionSent;
+      return (window as any).timingForJob(job);
+    }, complete);
+    assert.equal(attempt.total, null, 'click-start alone is not dispatch evidence');
+    const legacy = await page.evaluate(input => {
+      const job: any = structuredClone(input);
+      for (const a of job.actions) { a.timing.version = 2; delete a.timing.sentAt; delete a.timing.trace.milestones.submissionSent;
+        a.timing.trace.steps.push({stage:'wait_server',startMs:a.timing.processingMs,endMs:a.timing.processingMs+40000,status:'completed'});
+        a.timing.processingMs += 40000; a.timing.fromPublicationMs += 40000; }
+      return { timing: (window as any).timingForJob(job), view: (window as any).renderActionTrace('share', (window as any).timingForJob(job)).textContent };
+    }, complete);
+    assert.equal(legacy.timing.total, 18.8, 'legacy conversion uses submission end, never confirmation totals');
+    assert.match(legacy.view, /Kết thúc thao tác gửi · dữ liệu cũ/);
+    assert.doesNotMatch(legacy.view, /Chờ và đọc phản hồi Facebook/);
     await page.evaluate(() => (window as any).refresh());
     assert.equal(await page.locator('.timing-diagnostics').first().getAttribute('open'), '');
     assert.match(await page.locator('.timing-diagnostics').nth(6).textContent() || '', /chưa có dữ liệu đo từng bước/);
@@ -184,7 +189,7 @@ test('timing tab measures from publication and only completes confirmed enabled 
     await page.locator('#timing-tab').focus(); await page.keyboard.press('ArrowLeft');
     assert.equal(await page.locator('#overview-panel').isVisible(), true);
     const likeCard = page.locator('#jobs > .job').first().locator('.action-result').first();
-    assert.match(await likeCard.innerText(), /Xử lý thao tác: 6,7 giây/);
-    assert.match(await likeCard.innerText(), /Từ lúc đăng: ≈ 11,7 giây/);
+    assert.match(await likeCard.innerText(), /Chuẩn bị và gửi: 6,7 giây/);
+    assert.match(await likeCard.innerText(), /Đã gửi sau khi đăng: ≈ 11,7 giây/);
   } finally { await browser.close(); }
 });

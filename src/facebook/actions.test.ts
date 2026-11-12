@@ -100,12 +100,14 @@ test('real UI workers retain read-back when comment acknowledgement or share ide
     const comment = result.actions.find(action => action.name === 'comment')!;
     assert.equal(comment.code, 'SERVER_CONFIRMED_AND_READ_BACK');
     assert.equal(comment.timing!.trace!.milestones.serverConfirmed, undefined);
-    assert.equal(typeof comment.timing!.trace!.milestones.serverAcknowledged, 'number');
-    assert.ok(comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait'));
+    assert.equal(typeof comment.timing!.trace!.milestones.submissionSent, 'number');
+    assert.ok(comment.timing!.sentAt);
+    assert.ok(!comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait'));
     const share = result.actions.find(action => action.name === 'share')!;
     assert.equal(share.externalId, '40');
-    assert.ok(share.timing!.trace!.milestones.serverConfirmed! < share.timing!.trace!.finishedMs!);
-    assert.ok(share.timing!.trace!.steps.some(step => step.stage === 'share_readback_audience'));
+    assert.equal(share.timing!.trace!.milestones.serverConfirmed, undefined);
+    assert.equal(typeof share.timing!.trace!.milestones.submissionSent, 'number');
+    assert.ok(!share.timing!.trace!.steps.some(step => step.stage === 'share_readback_audience'));
     assert.equal(navigations.filter(url => url === ownUrl).length, 1);
     assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 4, 'three workers plus comment read-back');
 });
@@ -114,14 +116,16 @@ test('comment read-back waits for delayed exact evidence after early page readin
   const { result } = await runWorkers({ comment: 'ack', share: 'response', commentDelayMs: 2200 });
   const comment = result.actions.find(a => a.name === 'comment')!;
   assert.equal(comment.code, 'SERVER_CONFIRMED_AND_READ_BACK');
-  assert.ok(comment.timing!.trace!.steps.some(step => step.stage === 'comment_readback_wait' && step.endMs - step.startMs >= 1500));
+  assert.ok(comment.timing!.sentAt);
+  assert.ok(!comment.timing!.trace!.steps.some(step => step.stage.startsWith('comment_readback')));
+  assert.ok(Date.parse(comment.finishedAt!) > Date.parse(comment.timing!.sentAt!));
 });
 
 test('bound singular-edge comments and complete share responses avoid both read-back navigations', { timeout: 30_000 }, async () => {
   const { result, navigations } = await runWorkers({ comment: 'edge', share: 'response' });
   const comment = result.actions.find(a => a.name === 'comment')!, share = result.actions.find(a => a.name === 'share')!;
   assert.equal(comment.code, 'SERVER_CONFIRMED');
-  assert.equal(typeof comment.timing!.trace!.milestones.serverConfirmed, 'number');
+  assert.equal(typeof comment.timing!.trace!.milestones.submissionSent, 'number');
   assert.ok(!comment.timing!.trace!.steps.some(s => s.stage.startsWith('comment_readback')));
   assert.equal(share.code, 'SERVER_CONFIRMED_RESPONSE_VERIFIED');
   assert.ok(!share.timing!.trace!.steps.some(s => s.stage.startsWith('share_readback')));
@@ -133,7 +137,8 @@ test('share privacy may be verified from its own published card without navigati
   const { result, navigations } = await runWorkers({ comment: 'edge', share: 'ui' });
   const share = result.actions.find(a => a.name === 'share')!;
   assert.equal(share.code, 'SERVER_CONFIRMED_UI_VERIFIED');
-  assert.ok(share.timing!.trace!.steps.some(s => s.stage === 'share_verify_current_page'));
+  assert.ok(!share.timing!.trace!.steps.some(s => s.stage === 'share_verify_current_page'));
+  assert.ok(share.timing!.sentAt);
   assert.ok(!share.timing!.trace!.steps.some(s => s.stage.startsWith('share_readback')));
   assert.equal(navigations.filter(url => url === ownUrl).length, 0);
 });

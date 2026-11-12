@@ -63,13 +63,13 @@ Comment cần đọc lại sẽ chờ đúng bằng chứng tối đa 6 giây, k
 
 ## Đọc số đo thời gian
 
-Bảng chính lấy **giờ đăng bài** làm mốc cho phát hiện, Like xong, Share xong, Comment xong. Tổng hoàn thành lấy mốc lâu nhất khi mọi thao tác đang bật đều thành công.
+Bảng lấy **giờ đăng Facebook** làm mốc cho phát hiện và **Like / Share / Comment đã gửi**. Cột **Gửi xong tất cả** lấy mốc gửi cuối của các thao tác bật. Mốc gửi được ghi khi trình duyệt cho phép yêu cầu thao tác ra mạng, không dùng lúc bắt đầu bấm nút hoặc lúc xác nhận thành công. Đã gửi không có nghĩa là Facebook đã xử lý thành công.
 
-Mở **Chi tiết** để xem thời gian đọc, khoảng cách hai lượt đọc, chờ trước thao tác và xử lý riêng từng thao tác. Ví dụ: phát hiện sau 3 giây, chờ 1 giây, Like mất 7 giây thì Like xong khoảng 11 giây từ lúc đăng.
+Tool vẫn xác minh kết quả, quyền riêng tư và chống gửi trùng như trước. Trạng thái thành công/chưa rõ kết quả hiển thị riêng; thời gian dừng tại mốc gửi, không đo hoặc cộng thời gian chờ phản hồi, xác minh và đọc lại. Các bước trước gửi như tải bài, tìm nút, soạn nội dung vẫn được đo để tối ưu. Số đo cập nhật trong RAM và lưu cùng kết quả, không thêm request hoặc ghi đĩa tại mốc gửi.
 
-Mở **Chi tiết** để xem từng bước của Like/Share/Comment: tải bài, xác minh, tìm nút, soạn, bấm gửi, chờ phản hồi và đọc lại kết quả. Mỗi bước có thời lượng riêng và mốc cộng dồn từ đầu nhánh; bước lâu nhất được tô đậm. Tách **Facebook xác nhận** với **Tool xác minh xong**. Phản hồi sơ bộ chưa đủ bằng chứng được ghi riêng, không coi là xác nhận thành công. Các mốc từ lúc đăng dùng hiệu chỉnh giờ Facebook; bài thử có sẵn tính từ lúc bấm thử. Số đo cập nhật trong bộ nhớ khi chạy và lưu cùng kết quả, không thêm thời gian chờ hay yêu cầu mạng. Lượt cũ chưa đo từng bước để trống.
+Lượt cũ có bước submit hoàn tất dùng mốc kết thúc thao tác gửi và được ghi rõ là dữ liệu cũ; đây chưa phải mốc phát yêu cầu mạng. Thiếu mốc hoặc xác nhận thủ công/đối soát thì để trống. Bài thử có sẵn tính từ lúc bấm thử, không đo phát hiện bài mới.
 
-Khoảng chờ mặc định **2 giây bắt đầu sau khi lượt đọc trước kết thúc**; chu kỳ thực tế còn có thời gian đọc. Đây không phải cam kết phát hiện trong tối đa 2 giây. Phép đo từ giờ đăng là ước tính có sai số do mạng/độ chính xác giờ Facebook. Dữ liệu cũ hoặc thiếu hiệu chỉnh để trống.
+Giờ máy được hiệu chỉnh theo phản hồi Facebook; các khoảng xử lý dùng đồng hồ đơn điệu. Cấu hình 2 giây là khoảng chờ sau khi lượt đọc trước kết thúc, nên chu kỳ thực tế còn cộng thời gian đọc.
 
 ## Dữ liệu riêng và chuyển máy
 

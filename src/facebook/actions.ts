@@ -123,9 +123,14 @@ export class FacebookActions implements ActionAdapter {
     // Routing disables HTTP cache, so it must not cover initial page/composer rendering.
     const writeGuard = async (route: Route) => {
       const request = route.request(), body = request.postData();
+      let sendingAction = false;
       if (request.method() === 'POST' && body) {
         if (!mutationActorAllowed(new URLSearchParams(body), job.accountId)) { await route.abort('blockedbyclient'); return; }
         const form = new URLSearchParams(body);
+        const operation = form.get('fb_api_req_friendly_name') || '';
+        const expected = name === 'comment' ? /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i
+          : name === 'like' ? /(?:React|Reaction|Like)/i : /(?:StoryCreate|CreateStory|Share)/i;
+        sendingAction = observation.armed && /Mutation$/.test(operation) && expected.test(operation) && form.get('__user') === job.accountId;
         if (name === 'comment' && /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i.test(form.get('fb_api_req_friendly_name') || '')) {
           const proof = commentRequestProof(form, job, original.feedbackIds);
           if (!proof.commentRequestCompatible) {
@@ -134,6 +139,9 @@ export class FacebookActions implements ActionAdapter {
         }
       }
       await route.continue();
+      // The browser has released this action's allowed mutation to the network.
+      // This records dispatch, independently of HTTP response or verification.
+      if (sendingAction) hooks.onSubmitted?.();
     };
     const stage = (value: Parameters<NonNullable<SubmitHooks['onStage']>>[0]) => { this.stages.set(name, value); hooks.onStage?.(value); };
     stage('navigate_original_post'); this.postIds.set(name, job.post.post_id);

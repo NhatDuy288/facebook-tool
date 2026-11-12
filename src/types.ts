@@ -13,7 +13,7 @@ export type JobTiming = { version: 2; origin: 'watch' | 'existing-test'; request
   publicationDelayMs: number | null; uncertaintyMs: number | null; clockOffsetMs: number | null;
   readStartedAt: string | null; readCompletedAt: string | null; previousReadCompletedAt: string | null;
   readDurationMs: number | null; readIntervalMs: number | null; pollWaitMs: number | null; pollSeconds: number | null };
-export type ActionTiming = { version: 2; startedAt: string; finishedAt: string | null; queueMs: number | null;
+export type ActionTiming = { version: 2 | 3; startedAt: string; finishedAt: string | null; sentAt?: string | null; queueMs: number | null;
   processingMs: number | null; fromDetectionMs: number | null; fromRequestMs: number | null;
   fromPublicationMs: number | null; uncertaintyMs: number | null;
   preparation?: ActionPreparation; trace?: ActionTraceData };
@@ -26,7 +26,7 @@ export type ActionStage = 'prepare_action' | 'navigate_original_post' | 'verify_
   | 'comment_readback_scope' | 'comment_readback_wait' | 'comment_readback_find'
   | 'share_readback_navigate' | 'share_readback_verify' | 'share_readback_scope'
   | 'share_readback_audience' | 'share_verify_response' | 'share_verify_current_page' | 'cleanup';
-export type ActionMilestone = 'submitStarted' | 'serverAcknowledged' | 'serverConfirmed';
+export type ActionMilestone = 'submitStarted' | 'submissionSent' | 'serverAcknowledged' | 'serverConfirmed';
 export type ActionTraceStep = { stage: ActionStage; startMs: number; endMs: number; status: 'completed' | 'running' | 'interrupted' };
 export type ActionTraceData = { version: 1; steps: ActionTraceStep[]; milestones: Partial<Record<ActionMilestone, number>>;
   finishedMs: number | null };
@@ -41,6 +41,7 @@ export type LogEntry = { id: number; at: string; level: 'info' | 'warning' | 'er
 export type Reader = { prepare(target: Config['target'], signal: AbortSignal): Promise<Account>;
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
 export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
+  onSubmitted?: () => void;
   onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
 export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string;
   shareProof?: { identityVerified: boolean; audience: 'only_me' | 'public' | null } };

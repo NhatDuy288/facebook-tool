@@ -7,31 +7,36 @@ function selectView(view){for(const name of ['overview','timing']){const active=
 for(const name of ['overview','timing']){$(name+'-tab').onclick=()=>selectView(name);$(name+'-tab').onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'overview':e.key==='End'?'timing':name==='overview'?'timing':'overview';selectView(next);$(next+'-tab').focus()}}}
 const durationSeconds=ms=>typeof ms==='number'&&Number.isFinite(ms)&&ms>=0?ms/1000:null;
 const unmeasuredCodes=['ALREADY_LIKED','RECONCILED_EXISTING','MANUALLY_CONFIRMED'];
-function actionProcessing(result){
-  if(!result||unmeasuredCodes.includes(result.code))return {seconds:null,legacy:false};
-  if(result.timing?.version===2)return {seconds:durationSeconds(result.timing.processingMs),legacy:false};
-  const ms=Date.parse(result.finishedAt)-Date.parse(result.startedAt);
-  return {seconds:durationSeconds(ms),legacy:durationSeconds(ms)!==null};
+function submissionTiming(result,timing,origin){
+  const at=result?.timing,missing={sent:false,legacy:false,offsetMs:null,processing:null,fromDetection:null,fromRequest:null,fromPublication:null};
+  if(!at||unmeasuredCodes.includes(result.code)||['skipped','simulated','ready','preparing','failed','cancelled'].includes(result.state))return missing;
+  if(at.version===3){
+    if(!at.sentAt||durationSeconds(at.trace?.milestones?.submissionSent)===null)return missing;
+    return {sent:true,legacy:false,offsetMs:at.trace.milestones.submissionSent,processing:durationSeconds(at.processingMs),fromDetection:durationSeconds(at.fromDetectionMs),fromRequest:durationSeconds(at.fromRequestMs),fromPublication:durationSeconds(at.fromPublicationMs)};
+  }
+  // Historical traces can identify completed UI submission, never network dispatch.
+  const step=at.version===2?at.trace?.steps?.find(s=>s.stage==='submit'&&s.status==='completed'):null;
+  if(!step||durationSeconds(step.endMs)===null)return missing;
+  const elapsed=step.endMs,queue=durationSeconds(at.queueMs),processing=elapsed/1000;
+  const fromDetection=queue===null?null:queue+processing;
+  const fromPublication=origin==='watch'&&durationSeconds(timing?.publicationDelayMs)!==null&&fromDetection!==null?timing.publicationDelayMs/1000+fromDetection:null;
+  const fromRequest=durationSeconds(at.fromRequestMs)!==null&&durationSeconds(at.processingMs)!==null?Math.max(0,(at.fromRequestMs-at.processingMs+elapsed)/1000):null;
+  return {sent:true,legacy:true,offsetMs:elapsed,processing,fromDetection,fromRequest,fromPublication};
 }
 function timingForJob(job){
   const published=job.post.creation_time*1000,timing=job.timing?.version===2?job.timing:null;
   const origin=timing?.origin||job.origin||'unknown',calibrated=!!timing&&origin==='watch';
   const detection=calibrated?durationSeconds(timing.publicationDelayMs):null,actions={};
   for(const name of ['like','share','comment']){
-    const a=job.actions.find(a=>a.name===name),at=a?.timing?.version===2?a.timing:null;
-    const measured=a?.state==='succeeded'&&!unmeasuredCodes.includes(a.code);
-    const processing=actionProcessing(a);
-    actions[name]={seconds:calibrated&&measured?durationSeconds(at?.fromPublicationMs):null,state:a?.state||'ready',code:a?.code,processing:processing.seconds,legacyProcessing:processing.legacy,queue:durationSeconds(at?.queueMs),fromDetection:durationSeconds(at?.fromDetectionMs),fromRequest:durationSeconds(at?.fromRequestMs),uncertaintySeconds:durationSeconds(at?.uncertaintyMs),trace:at?.trace,preparation:at?.preparation};
+    const a=job.actions.find(a=>a.name===name),at=a?.timing,sent=submissionTiming(a,timing,origin);
+    actions[name]={seconds:calibrated?sent.fromPublication:null,state:a?.state||'ready',code:a?.code,processing:sent.processing,legacyProcessing:sent.legacy,sent:sent.sent,sendOffsetMs:sent.offsetMs,queue:durationSeconds(at?.queueMs),fromDetection:sent.fromDetection,fromRequest:sent.fromRequest,trace:at?.trace,preparation:at?.preparation};
   }
-  const enabled=Object.entries(actions).filter(([,a])=>a.state!=='skipped');
-  const complete=enabled.length>0&&enabled.every(([,a])=>a.state==='succeeded'&&a.seconds!==null);
+  const enabled=Object.entries(actions).filter(([,a])=>a.state!=='skipped'&&a.code!=='ALREADY_LIKED');
+  const complete=enabled.length>0&&enabled.every(([,a])=>a.sent&&a.seconds!==null);
   const total=complete?Math.max(...enabled.map(([,a])=>a.seconds)):null;
   const slowest=complete?enabled.filter(([,a])=>a.seconds===total).map(([name])=>name):[];
-  const uncertaintySeconds=durationSeconds(timing?.uncertaintyMs);
-  const uncertainties=enabled.map(([,a])=>a.uncertaintySeconds??uncertaintySeconds).filter(value=>value!==null);
-  const totalUncertainty=complete&&uncertainties.length?Math.max(...uncertainties):null;
-  const summary=origin==='existing-test'?'Thử bài có sẵn':!timing?'Thiếu dữ liệu đo':job.mode==='dry-run'?'Chỉ ghi nhận':!enabled.length?'Không bật thao tác':complete?slowest.map(name=>actionNames[name]).join(' / ')+' xong cuối':enabled.some(([,a])=>['failed','unknown','cancelled'].includes(a.state))?'Chưa hoàn tất':enabled.every(([,a])=>a.state==='succeeded')?'Thiếu dữ liệu đo':'Đang xử lý';
-  return {published,detection,actions,total,slowest,summary,origin,calibrated,uncertaintySeconds,totalUncertainty,timing};
+  const summary=origin==='existing-test'?'Thử bài có sẵn':!timing?'Thiếu dữ liệu đo':job.mode==='dry-run'?'Chỉ ghi nhận':!enabled.length?'Không cần gửi thao tác':complete?slowest.map(name=>actionNames[name]).join(' / ')+' gửi cuối':enabled.some(([,a])=>['failed','unknown','cancelled'].includes(a.state))?'Chưa ghi nhận gửi đủ':enabled.every(([,a])=>a.state==='succeeded')?'Thiếu mốc gửi':'Chưa gửi đủ';
+  return {published,detection,actions,total,slowest,summary,origin,calibrated,timing};
 }
 function secondsText(value){
   if(typeof value!=='number'||!Number.isFinite(value)||value<0)return '—';
@@ -54,19 +59,17 @@ function renderActionTrace(name,t){
   const a=t.actions[name],trace=a.trace,section=el('section','action-trace');section.dataset.action=name;
   section.append(el('strong','trace-title',actionNames[name]+' · '+states[a.state]));
   if(!trace||trace.version!==1){section.append(el('p','muted small','Lượt này chưa có dữ liệu đo từng bước.'));return section}
-  const marks=trace.milestones||{},server=marks.serverConfirmed,ack=marks.serverAcknowledged;
-  const grid=el('div','trace-milestones');
-  const verified=a.state==='succeeded'&&!unmeasuredCodes.includes(a.code)?trace.finishedMs:null;
-  for(const [label,offset] of [['Bắt đầu bấm gửi',marks.submitStarted],[server===undefined&&ack!==undefined?'Facebook phản hồi · cần kiểm tra':'Facebook xác nhận',server??ack],['Tool xác minh xong',verified]]){
+  const marks=trace.milestones||{},grid=el('div','trace-milestones');
+  for(const [label,offset] of [['Bắt đầu thao tác gửi',marks.submitStarted],[a.legacyProcessing?'Kết thúc thao tác gửi · dữ liệu cũ':'Đã phát yêu cầu',a.sendOffsetMs]]){
     const metric=el('div');metric.append(el('span','muted small',label),el('strong','',traceMilestone(t,a,offset)));grid.append(metric);
   }
   section.append(grid);
-  if(server===undefined&&ack!==undefined)section.append(el('p','trace-note small','Phản hồi chưa đủ bằng chứng. Tool cần đọc lại kết quả trước khi xác nhận thành công.'));
-  if(durationSeconds(verified)!==null&&durationSeconds(server??ack)!==null)section.append(el('p','trace-note small','Từ phản hồi Facebook đến xác minh xong: '+traceDuration(Math.max(0,verified-(server??ack)))));
+  if(a.legacyProcessing)section.append(el('p','trace-note small','Lượt cũ dùng mốc kết thúc bấm gửi / nhấn Enter; chưa có mốc phát yêu cầu mạng.'));
   section.append(el('p','muted small','Thời gian bước là khoảng riêng của bước đó. Cột cuối cộng dồn từ lúc nhánh bắt đầu; các nhánh chạy song song.'));
   const table=el('table','trace-table'),head=el('thead'),headers=el('tr');
   for(const label of ['Bước','Thời gian bước','Đến mốc từ đầu nhánh'])headers.append(el('th','',label));head.append(headers);table.append(head);
-  const body=el('tbody'),steps=Array.isArray(trace.steps)?trace.steps:[];
+  const verification=new Set(['wait_server','verify_like','share_verify_response','share_verify_current_page','cleanup']);
+  const body=el('tbody'),steps=(Array.isArray(trace.steps)?trace.steps:[]).filter(step=>!verification.has(step.stage)&&!step.stage.startsWith('comment_readback')&&!step.stage.startsWith('share_readback')).filter(step=>a.sendOffsetMs===null||step.startMs<=a.sendOffsetMs).map(step=>({...step,endMs:a.sendOffsetMs===null?step.endMs:Math.min(step.endMs,a.sendOffsetMs)}));
   const longest=steps.length?Math.max(...steps.map(step=>Math.max(0,step.endMs-step.startMs))):0;
   for(const step of steps){
     const duration=Math.max(0,step.endMs-step.startMs),tr=el('tr',duration===longest&&longest>0?'trace-longest':'');
@@ -79,7 +82,7 @@ function renderActionTrace(name,t){
 function renderTimingDetails(job,t){
   const row=el('tr','timing-diagnostics-row'),cell=el('td'),details=el('details','timing-diagnostics');cell.colSpan=7;
   details.open=expandedTimingJobs.has(job.id);details.ontoggle=()=>{if(details.open)expandedTimingJobs.add(job.id);else expandedTimingJobs.delete(job.id)};
-  details.append(el('summary','','Chi tiết: từng bước, Facebook xác nhận và tool xác minh xong'));
+  details.append(el('summary','','Chi tiết: đọc, chờ và các bước đến lúc gửi'));
   const note=t.origin==='existing-test'?'Đây là lần thử trên bài có sẵn. Tính thời gian từ lúc bấm thử; không dùng lần thử này để đo tốc độ phát hiện bài mới.':!t.timing?'Lượt cũ thiếu dữ liệu hiệu chỉnh đồng hồ. Các số đo từ lúc đăng bài được để trống để tránh báo sai.':'Các khoảng xử lý bên dưới được đo trực tiếp, không bị ảnh hưởng bởi lệch giờ máy với Facebook.';
   details.append(el('p','muted small',note));
   if(t.timing){
@@ -92,9 +95,9 @@ function renderTimingDetails(job,t){
     if(typeof offset==='number'&&Number.isFinite(offset))details.append(el('p','timing-clock-note small',Math.abs(offset)<1000?'Giờ máy đã khớp gần với Facebook.':'Giờ máy '+(offset<0?'nhanh hơn':'chậm hơn')+' Facebook '+secondsText(Math.abs(offset)/1000)+'. Đã hiệu chỉnh khi tính từ lúc đăng bài.'));
   }
   const table=el('table','timing-action-details'),head=el('thead'),headers=el('tr');
-  for(const text of ['Thao tác','Chờ trước thao tác','Xử lý thao tác',t.origin==='existing-test'?'Từ lúc bấm thử':'Từ lúc phát hiện'])headers.append(el('th','',text));head.append(headers);table.append(head);
+  for(const text of ['Thao tác','Chờ trước thao tác','Chuẩn bị và gửi',t.origin==='existing-test'?'Từ lúc bấm thử đến gửi':'Từ lúc phát hiện đến gửi'])headers.append(el('th','',text));head.append(headers);table.append(head);
   const body=el('tbody');
-  for(const name of ['like','share','comment']){const a=t.actions[name],tr=el('tr');tr.append(el('td','',actionNames[name]),el('td','',secondsText(a.queue)));const processing=el('td','',secondsText(a.processing));if(a.legacyProcessing)processing.append(el('span','timing-detail','Dữ liệu cũ · tính bằng giờ máy'));tr.append(processing,el('td','',secondsText(t.origin==='existing-test'?a.fromRequest:a.fromDetection)));body.append(tr)}
+  for(const name of ['like','share','comment']){const a=t.actions[name],tr=el('tr');tr.append(el('td','',actionNames[name]),el('td','',secondsText(a.queue)));const processing=el('td','',secondsText(a.processing));if(a.legacyProcessing)processing.append(el('span','timing-detail','Dữ liệu cũ · mốc kết thúc thao tác gửi'));tr.append(processing,el('td','',secondsText(t.origin==='existing-test'?a.fromRequest:a.fromDetection)));body.append(tr)}
   table.append(body);details.append(table);
   for(const name of ['like','share','comment'])if(!['skipped','simulated'].includes(t.actions[name].state))details.append(renderActionTrace(name,t));
   cell.append(details);row.append(cell);return row;
@@ -108,7 +111,7 @@ function renderTimings(s){
     const published=el('td','timing-date',Number.isFinite(t.published)&&t.published>0?new Date(t.published).toLocaleString('vi-VN'):'—');
     const detected=el('td',t.detection===null?'timing-unavailable':'timing-number',t.detection===null?timingMissingText(t):estimateText(t.detection));
     tr.append(post,published,detected);
-    for(const name of ['like','share','comment']){const a=t.actions[name],td=el('td',(a.seconds===null?'timing-unavailable':'timing-number')+(t.slowest.includes(name)?' timing-slowest':''),a.seconds===null?'—':estimateText(a.seconds));let detail=a.seconds!==null?'Đã xác nhận':a.state==='skipped'?'Đã tắt':a.state==='simulated'?'Chỉ ghi nhận':a.code==='ALREADY_LIKED'?'Đã thích từ trước':t.origin==='existing-test'?'Thử bài có sẵn':a.state==='succeeded'?'Thiếu dữ liệu đo':states[a.state];td.append(el('span','timing-detail',detail));tr.append(td)}
+    for(const name of ['like','share','comment']){const a=t.actions[name],td=el('td',(a.seconds===null?'timing-unavailable':'timing-number')+(t.slowest.includes(name)?' timing-slowest':''),a.seconds===null?'—':estimateText(a.seconds));let detail=a.sent?(a.state==='submitting'?'Đã gửi · Đang xác minh':'Đã gửi · '+states[a.state]):a.state==='skipped'?'Đã tắt':a.state==='simulated'?'Chỉ ghi nhận':a.code==='ALREADY_LIKED'?'Đã thích từ trước':t.origin==='existing-test'?'Thử bài có sẵn':a.state==='succeeded'?'Thiếu dữ liệu đo':states[a.state];td.append(el('span','timing-detail',detail));tr.append(td)}
     const total=el('td','timing-total'+(t.total===null?' timing-unavailable':''),estimateText(t.total));total.append(el('span','timing-detail',t.summary));tr.append(total);root.append(tr,renderTimingDetails(job,t));
   }
 }
@@ -141,11 +144,11 @@ function renderJobs(s){
     card.append(el('div','job-content','Bình luận: '+(j.plan.comment??'Đã tắt')+' · Chia sẻ: '+j.plan.share));
     const actions=el('div','job-actions');
     for(const result of j.actions){
-      const at=t.actions[result.name],box=el('div','action-result');box.append(el('strong','',actionNames[result.name]),el('span','state '+result.state,states[result.state]));
+      const at=t.actions[result.name],box=el('div','action-result');box.append(el('strong','',actionNames[result.name]),el('span','state '+result.state,at.sent&&result.state==='submitting'?'Đã gửi · Đang xác minh':states[result.state]));
       if(result.code){const info=el('span','muted small',result.code==='ALREADY_LIKED'?'Đã thích từ trước':result.code==='MANUALLY_CONFIRMED'?'Đã kiểm tra thủ công':result.state==='unknown'?'Kiểm tra Facebook trước khi gửi lại':result.state==='failed'?(actionErrors[result.code]||'Cần kiểm tra Facebook'):'');box.append(info)}
-      if(at.processing!==null)box.append(el('span','muted small','Xử lý thao tác: '+secondsText(at.processing)+(at.legacyProcessing?' (dữ liệu cũ · giờ máy)':'')));
-      if(at.seconds!==null)box.append(el('span','action-publication small','Từ lúc đăng: '+estimateText(at.seconds)));
-      else if(t.origin==='existing-test'&&at.fromRequest!==null)box.append(el('span','action-publication small','Từ lúc bấm thử: '+secondsText(at.fromRequest)));
+      if(at.processing!==null)box.append(el('span','muted small','Chuẩn bị và gửi: '+secondsText(at.processing)+(at.legacyProcessing?' (mốc thao tác cũ)':'')));
+      if(at.seconds!==null)box.append(el('span','action-publication small','Đã gửi sau khi đăng: '+estimateText(at.seconds)));
+      else if(t.origin==='existing-test'&&at.fromRequest!==null)box.append(el('span','action-publication small','Đã gửi sau khi bấm thử: '+secondsText(at.fromRequest)));
       if(result.externalUrl){const link=el('a','small','Xem kết quả ↗');link.href=result.externalUrl;link.target='_blank';link.rel='noreferrer';box.append(link)}
       if(result.state==='unknown'){
         const check=el('button','secondary','Đối soát với Facebook');check.disabled=['watching','initializing','stopping'].includes(s.phase)||!!s.activeJob;check.onclick=()=>command('reconcile',{jobId:j.id,name:result.name});box.append(check);

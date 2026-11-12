@@ -43,9 +43,9 @@ Tài liệu mô tả yêu cầu hiện hành; cách cài đặt và sử dụng 
 
 - Ghi thời điểm xác minh đầu tiên của mỗi bài trong batch chứa nó, không lấy lúc tạo công việc làm thời gian phát hiện.
 - Độ trễ từ đăng đến phát hiện dùng giờ phản hồi Facebook và thời điểm gửi/nhận để hiệu chỉnh lệch đồng hồ, kèm sai số.
-- Chờ, xử lý và khoảng từ phát hiện tới xác nhận đo bằng đồng hồ đơn điệu. Nếu giờ máy bị chỉnh trong lượt đọc, bỏ phép hiệu chỉnh của lượt đó.
-- Tổng từ đăng đến hoàn thành là mốc lâu nhất của các thao tác bật, chỉ khi tất cả đã thành công và có phép đo. Thao tác tắt không tham gia tổng.
-- Chi tiết mỗi nhánh đo các bước tải/xác minh bài, tìm nút, soạn/gửi, phản hồi và đọc lại; hiển thị thời lượng từng bước, mốc cộng dồn và bước lâu nhất. Phân biệt phản hồi sơ bộ, Facebook xác nhận và tool xác minh xong. Đo trong RAM, lưu kết quả; không thêm chờ/request. Lượt cũ thiếu trace để trống.
+- Chờ, xử lý và khoảng từ phát hiện tới phát yêu cầu gửi đo bằng đồng hồ đơn điệu. Nếu giờ máy bị chỉnh trong lượt đọc, bỏ phép hiệu chỉnh của lượt đó.
+- Tổng từ đăng đến gửi xong lấy mốc phát yêu cầu cuối cùng của các thao tác bật. Hiển thị ngay khi đã gửi đủ, kể cả đang xác minh hoặc chưa rõ kết quả; trạng thái thành công được kiểm tra riêng. Thao tác tắt hoặc đã thích từ trước không tham gia tổng.
+- Chi tiết mỗi nhánh chỉ đo tới lúc phát yêu cầu gửi: tải/xác minh bài trước gửi, tìm nút, soạn và gửi. Dừng trace khi yêu cầu đã được phép ra mạng, không đo thời gian phản hồi/xác minh/đọc lại. Đo trong RAM, lưu cùng kết quả; không thêm chờ/request. Lượt cũ có bước submit hoàn tất được hiển thị mốc thao tác gửi và ghi rõ nguồn; thiếu mốc để trống.
 - Bài thử có sẵn không phải mẫu đo phát hiện. Dữ liệu cũ thiếu hiệu chỉnh, đối soát/xác nhận thủ công hoặc đã thích từ trước không được gán mốc hoàn tất suy đoán.
 - UI hiển thị phát hiện, từng thao tác, tổng; chi tiết lượt đọc, chờ và xử lý. Từ 60 giây hiển thị phút/giây.
 - Tự động chạy ở nền: không kích hoạt cửa sổ hoặc khôi phục cửa sổ thu nhỏ khi mở/đóng tab, đọc, tương tác hay đối soát. Chỉ hiện chủ động lúc khởi động/mở đăng nhập. Không tạo được tab nền thì báo lỗi, không chuyển sang tab giành focus.

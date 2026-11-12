@@ -225,43 +225,49 @@ export class Engine {
   async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation): Promise<void> {
     const started = performance.now(), startedAt = new Date().toISOString(), clock = this.jobClocks.get(job.id);
     const trace = new ActionTrace(started); trace.enter('prepare_action');
-    const initialTiming: ActionTiming = { version: 2, startedAt, finishedAt: null, queueMs: clock ? started - clock.referenceMono : null,
+    const initialTiming: ActionTiming = { version: 3, startedAt, finishedAt: null, sentAt: null, queueMs: clock ? started - clock.referenceMono : null,
       processingMs: null, fromDetectionMs: null, fromRequestMs: null, fromPublicationMs: null, uncertaintyMs: clock?.uncertaintyMs ?? null,
       preparation, trace: trace.snapshot() };
     if (signal.aborted || !this.store.transition(job.id, name, ['ready'], 'preparing', { timing: initialTiming })) return;
     const traceKey = job.id + ':' + name;
     this.activeTraces.set(traceKey, { trace, timing: initialTiming });
-    let submitted = false;
-    const finishTiming = (confirmed: boolean): ActionTiming => {
+    let submitted = false, trackingOpen = true;
+    let sentTiming: ActionTiming | null = null;
+    const recordSent = () => {
+      if (!trackingOpen || !submitted || sentTiming) return;
       const finished = performance.now(), fromReference = clock ? finished - clock.referenceMono : null;
-      return { ...initialTiming, trace: trace.snapshot(), finishedAt: new Date().toISOString(), processingMs: finished - started,
-        fromDetectionMs: confirmed && clock?.origin === 'watch' ? fromReference : null,
-        fromRequestMs: confirmed && clock ? finished - clock.requestedMono : null,
-        fromPublicationMs: confirmed && clock?.origin === 'watch' && clock.publicationDelayMs !== null && fromReference !== null
+      trace.mark('submissionSent'); trace.finish();
+      const sentAt = new Date().toISOString();
+      sentTiming = { ...initialTiming, trace: trace.snapshot(), finishedAt: sentAt, sentAt, processingMs: finished - started,
+        fromDetectionMs: clock?.origin === 'watch' ? fromReference : null,
+        fromRequestMs: clock ? finished - clock.requestedMono : null,
+        fromPublicationMs: clock?.origin === 'watch' && clock.publicationDelayMs !== null && fromReference !== null
           ? clock.publicationDelayMs + fromReference : null };
+      this.activeTraces.set(traceKey, { trace, timing: sentTiming });
     };
+    const finishTiming = (): ActionTiming => sentTiming ?? { ...initialTiming, trace: trace.snapshot() };
     try {
       const result = await this.adapter.execute(name, job, { signal,
         onStage: stage => trace.enter(stage),
-        onServerResponse: kind => trace.mark(kind === 'confirmed' ? 'serverConfirmed' : 'serverAcknowledged'),
+        onSubmitted: recordSent,
         onServerConfirmed: result => this.store.evidence(job.id, name, result), beforeSubmit: () => {
         signal.throwIfAborted();
         if (!this.store.transition(job.id, name, ['preparing'], 'submitting')) throw Error('STOPPED');
         submitted = true; trace.mark('submitStarted'); signal.throwIfAborted();
       } });
       trace.finish();
-      this.store.transition(job.id, name, ['preparing', 'submitting'], 'succeeded', { ...result, timing: finishTiming(result.code !== 'ALREADY_LIKED') });
-      this.store.log('info', 'ACTION_SUCCEEDED', `${name}: đã xác nhận kết quả (${Math.round(performance.now() - started)} ms).`, job.id);
+      this.store.transition(job.id, name, ['preparing', 'submitting'], 'succeeded', { ...result, timing: finishTiming() });
+      this.store.log('info', 'ACTION_SUCCEEDED', `${name}: đã xác nhận kết quả.`, job.id);
     } catch (error) {
       trace.finish(true);
       const actionCode = error instanceof Error && ['TimeoutError'].includes(error.name) ? 'UI_UNSUPPORTED' : errorCode(error);
       const code = submitted ? 'RESULT_UNCONFIRMED' : signal.aborted ? 'STOPPED' : actionCode;
-      this.store.transition(job.id, name, ['preparing', 'submitting'], submitted ? 'unknown' : signal.aborted ? 'cancelled' : 'failed', { code, timing: finishTiming(false) });
+      this.store.transition(job.id, name, ['preparing', 'submitting'], submitted ? 'unknown' : signal.aborted ? 'cancelled' : 'failed', { code, timing: finishTiming() });
       this.store.log(submitted ? 'warning' : 'error', code, `${name}: ${message(code)}`, job.id);
       if (['LOGIN_REQUIRED', 'LOGIN_OR_CHECKPOINT', 'ACTOR_CHANGED', 'PERSONAL_ACCOUNT_REQUIRED'].includes(errorCode(error))) {
         this.abort.abort(); this.queue = []; void this.adapter.stop(); this.phase = 'error'; this.note = message(errorCode(error));
       }
-    } finally { this.activeTraces.delete(traceKey); }
+    } finally { trackingOpen = false; this.activeTraces.delete(traceKey); }
   }
   fail(error: unknown) {
     if (this.abort.signal.aborted) { if (this.phase !== 'error' && this.phase !== 'stopping') { this.phase = 'idle'; this.note = message('STOPPED'); } return; }

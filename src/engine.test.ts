@@ -24,7 +24,7 @@ class FakeActions implements ActionAdapter {
   async prepare(){}
   async execute(name:ActionName,_job:Job,hooks:SubmitHooks){
     this.entered.push(name); if(this.entered.length===3)this.barrier!();
-    await this.wait;hooks.signal.throwIfAborted();hooks.beforeSubmit();this.sent.push(name);return{code:'TEST_CONFIRMED'};
+    await this.wait;hooks.signal.throwIfAborted();hooks.beforeSubmit();hooks.onSubmitted?.();this.sent.push(name);return{code:'TEST_CONFIRMED'};
   }
   async stop(){this.barrier?.();} async close(){}
 }
@@ -64,71 +64,87 @@ test('an invalid expanded read preserves the last good three and creates no job'
   } finally { await engine.close(); store.close(); }
 });
 
-test('step traces are live in memory, durable at completion and separate server response from read-back', async () => {
+test('submission times freeze while confirmation and read-back continue, and are preserved at completion', async () => {
   const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test', pollSeconds: 1 });
-  let release!: () => void, responses = 0;
+  let release!: () => void, sends = 0;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const reader: Reader = new FakeReader([read(), read(), { ...read([post('6', 110), ...old.slice(0, 2)]),
     observations: { '6': { observedAt: new Date().toISOString(), publicationDelayMs: 4500,
       uncertaintyMs: 600, clockOffsetMs: -240000, clockSource: 'facebook-response' } } }]);
   const adapter: ActionAdapter = {
     async prepare() { await delay(5); }, async stop() { release(); }, async close() {},
-    async execute(name, _job, hooks) {
+    async execute(_name, _job, hooks) {
       hooks.onStage?.('navigate_original_post'); await delay(10);
-      hooks.onStage?.('prepare_submission'); hooks.beforeSubmit();
-      hooks.onStage?.('wait_server'); await delay(10);
-      hooks.onServerResponse?.(name === 'comment' ? 'acknowledged' : 'confirmed'); responses++;
-      await gate;
-      hooks.onStage?.(name === 'comment' ? 'comment_readback_find' : name === 'share' ? 'share_readback_verify' : 'verify_like');
-      await delay(10); return { code: 'TEST_CONFIRMED' };
+      hooks.onStage?.('prepare_submission'); hooks.beforeSubmit(); hooks.onStage?.('submit');
+      await delay(10); hooks.onSubmitted?.(); sends++;
+      hooks.onStage?.('wait_server'); await gate;
+      hooks.onServerResponse?.('confirmed'); hooks.onStage?.('share_readback_verify');
+      await delay(30); hooks.onSubmitted?.(); return { code: 'TEST_CONFIRMED' };
     },
   };
   const engine = new Engine(store, reader, adapter);
   try {
-    engine.start(); await until(() => responses === 3);
+    engine.start(); await until(() => sends === 3);
     const live = engine.status().jobs[0];
     for (const a of live.actions) {
-      assert.equal(a.timing!.trace!.finishedMs, null);
-      assert.equal(a.timing!.trace!.steps.at(-1)!.status, 'running');
-      assert.equal(typeof a.timing!.trace!.milestones.submitStarted, 'number');
-      assert.ok(a.timing!.preparation!.tabsMs >= 4);
+      assert.equal(a.state, 'submitting'); assert.equal(a.timing!.version, 3);
+      assert.ok(a.timing!.sentAt); assert.ok(a.timing!.trace!.finishedMs! > 0);
+      assert.equal(typeof a.timing!.trace!.milestones.submissionSent, 'number');
+      assert.equal(a.timing!.trace!.steps.at(-1)!.stage, 'submit');
       assert.deepEqual(store.job(live.id)!.actions.find(stored => stored.name === a.name)!.timing!.trace!.milestones, {},
-        'steps are not synchronously written to SQLite for every event');
+        'no extra synchronous disk write is inserted at network dispatch');
     }
-    assert.equal(live.actions.find(a => a.name === 'comment')!.timing!.trace!.milestones.serverConfirmed, undefined);
+    await delay(80);
+    assert.deepEqual(engine.status().jobs[0].actions.map(a => a.timing), live.actions.map(a => a.timing));
     release(); await until(() => !engine.activeJob);
-    const saved = store.job(live.id)!;
-    for (const a of saved.actions) {
-      const trace = a.timing!.trace!, response = trace.milestones[a.name === 'comment' ? 'serverAcknowledged' : 'serverConfirmed']!;
-      assert.ok(trace.finishedMs! > response);
-      assert.ok(a.timing!.processingMs! >= trace.finishedMs!);
-      assert.ok(trace.steps.every(step => step.status === 'completed' && step.endMs >= step.startMs));
+    for (const a of store.job(live.id)!.actions) {
+      assert.equal(a.state, 'succeeded');
+      assert.deepEqual(a.timing, live.actions.find(before => before.name === a.name)!.timing);
       assert.ok(Math.abs(a.timing!.fromPublicationMs! - 4500 - a.timing!.fromDetectionMs!) < 0.001);
+      assert.equal(a.timing!.trace!.milestones.serverConfirmed, undefined);
+      assert.ok(!a.timing!.trace!.steps.some(step => step.stage.includes('readback') || step.stage === 'wait_server'));
     }
     assert.equal(engine.activeTraces.size, 0);
   } finally { await engine.close(); store.close(); }
 });
 
-test('a failed read-back preserves server confirmation but never reports verified completion', async () => {
+test('failed verification preserves sent timing and unknown status without recording verification duration', async () => {
   const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
   const session = store.baseline('10', '20', 100, old);
   const job = store.testJob('10', '20', session, post('6', 110), store.config());
   const adapter: ActionAdapter = { async prepare() {}, async stop() {}, async close() {},
     async execute(_name, _job, hooks) {
-      hooks.beforeSubmit(); hooks.onStage?.('wait_server'); hooks.onServerResponse?.('confirmed');
+      hooks.beforeSubmit(); hooks.onStage?.('submit'); hooks.onSubmitted?.();
+      hooks.onStage?.('wait_server'); await delay(30);
       hooks.onStage?.('share_readback_verify'); throw Error('RESULT_UNCONFIRMED');
     } };
   const engine = new Engine(store, new FakeReader([read()]), adapter);
   try {
     await engine.perform('share', job, new AbortController().signal);
     const action = store.job(job.id)!.actions.find(a => a.name === 'share')!;
-    assert.equal(action.state, 'unknown');
-    assert.equal(typeof action.timing!.trace!.milestones.serverConfirmed, 'number');
-    assert.equal(action.timing!.fromPublicationMs, null);
-    assert.equal(action.timing!.trace!.steps.at(-1)!.status, 'interrupted');
+    assert.equal(action.state, 'unknown'); assert.ok(action.timing!.sentAt);
+    assert.equal(typeof action.timing!.trace!.milestones.submissionSent, 'number');
+    assert.equal(action.timing!.trace!.steps.at(-1)!.stage, 'submit');
+    assert.ok(action.timing!.processingMs! < 25);
     assert.equal(engine.activeTraces.size, 0);
   } finally { await engine.close(); store.close(); }
 });
+
+test('a click attempt without a dispatched request never invents a sent milestone', async () => {
+  const store = new Store(':memory:');
+  store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
+  const session = store.baseline('10', '20', 100, old), job = store.testJob('10', '20', session, post('6'), store.config());
+  const adapter: ActionAdapter = { async prepare() {}, async stop() {}, async close() {},
+    async execute(_name, _job, hooks) { hooks.beforeSubmit(); hooks.onStage?.('submit'); throw Error('RESULT_UNCONFIRMED'); } };
+  const engine = new Engine(store, new FakeReader([read()]), adapter);
+  try {
+    await engine.perform('comment', job, new AbortController().signal);
+    const action = store.job(job.id)!.actions.find(a => a.name === 'comment')!;
+    assert.equal(action.state, 'unknown'); assert.equal(action.timing!.sentAt, null);
+    assert.equal(action.timing!.processingMs, null); assert.equal(action.timing!.trace!.milestones.submissionSent, undefined);
+  } finally { await engine.close(); store.close(); }
+});
+
 test('new verified posts create one durable job and all three actions start in parallel',async()=>{
   const store=new Store(':memory:');store.saveConfig({...DEFAULT_CONFIG,mode:'test',pollSeconds:1});
   const adapter=new FakeActions(),reader=new FakeReader([read(),read(),read([post('6',110),...old.slice(0,2)])]);
@@ -181,7 +197,7 @@ test('detection calibration and monotonic action timings survive a laptop clock 
     async execute(_name, _job, hooks) {
       hooks.beforeSubmit();
       if (!jumped) { t.mock.timers.tick(60000); jumped = true; }
-      await delay(25); return { code: 'TEST_CONFIRMED' };
+      await delay(25); hooks.onSubmitted?.(); return { code: 'TEST_CONFIRMED' };
     } };
   const engine = new Engine(store, reader, adapter);
   try {
