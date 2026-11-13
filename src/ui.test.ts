@@ -3,7 +3,65 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { DEFAULT_CONFIG } from './config.ts';
+import { Store } from './store.ts';
 import { READ_TARGETS, renderSourceOptions } from './facebook/feed/read-target.ts';
+
+test('journal fetches ten rows at a time on scroll and keeps the newest fifty', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const store = new Store(':memory:');
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 500 } });
+    const html = (await readFile(new URL('../public/index.html', import.meta.url), 'utf8')).replaceAll('__TOOL_NONCE__', 'test').replaceAll('__SOURCE_OPTIONS__', renderSourceOptions());
+    const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+    const css = await readFile(new URL('../public/style.css', import.meta.url), 'utf8');
+    const cursors: (number | null)[] = [];
+    for (let id = 1; id <= 65; id++) store.log('info', 'TEST', 'Sự kiện ' + id);
+    await page.route('http://tool.test/**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
+      if (url.pathname === '/app.js') return route.fulfill({ contentType: 'application/javascript', body: app });
+      if (url.pathname === '/style.css') return route.fulfill({ contentType: 'text/css', body: css });
+      if (url.pathname === '/api/status') {
+        assert.equal(route.request().headers()['x-tool-log-feed'], '1');
+        return route.fulfill({ json: {
+          config: DEFAULT_CONFIG, phase: 'idle', note: '', account: null, source: READ_TARGETS['test-profile'], posts: [], jobs: [],
+          revisions: { jobs: '0:1', logs: String(store.logsRevision) }, logFeed: true,
+          metrics: { reads: 0, queries: 0, decodedBytes: 0, lastQueryMs: null }, nextComment: '',
+        } });
+      }
+      if (url.pathname === '/api/logs') {
+        const cursor = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : null;
+        cursors.push(cursor);
+        return route.fulfill({ json: store.logPage(cursor) });
+      }
+      return route.fulfill({ body: '' });
+    });
+    await page.goto('http://tool.test/');
+    await page.waitForFunction(() => document.getElementById('phase')?.textContent === 'Đã dừng');
+    assert.deepEqual(cursors, []);
+    const list = page.locator('#logs'), rows = list.locator('.log');
+    const waitForRows = (count: number) => page.waitForFunction(n => document.querySelectorAll('#logs .log').length === n, count);
+    await page.locator('#log-section').scrollIntoViewIfNeeded();
+    await waitForRows(10);
+    assert.deepEqual(cursors, [null]);
+    for (let count = 20; count <= 50; count += 10) {
+      await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+      await waitForRows(count);
+    }
+    await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    assert.deepEqual(cursors, [null, 56, 46, 36, 26]);
+    assert.deepEqual(await rows.locator('span').allTextContents(), Array.from({ length: 50 }, (_, i) => 'Sự kiện ' + (65 - i)));
+    assert.equal(store.logs().length, 65);
+    store.log('info', 'TEST', 'Sự kiện 66');
+    await page.evaluate(() => (window as any).refresh(true));
+    assert.equal(await rows.first().locator('span').textContent(), 'Sự kiện 65');
+    await list.evaluate(node => { node.scrollTop = 0; });
+    await rows.first().getByText('Sự kiện 66').waitFor();
+    assert.equal(await rows.count(), 50);
+    assert.equal(await rows.last().locator('span').textContent(), 'Sự kiện 17');
+    assert.deepEqual(cursors, [null, 56, 46, 36, 26, null]);
+  } finally { store.close(); await browser.close(); }
+});
 
 test('source selection stays consistent across refresh, save and baseline/start commands', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -112,20 +170,31 @@ test('timing tab measures dispatch independently of confirmation and hides verif
       { ...complete, id: 'legacy', timing: null, actions: complete.actions.map(a => ({ ...a, timing: null })) },
       { ...complete, id: 'manual-existing', origin: 'existing-test', timing: { ...complete.timing, origin: 'existing-test', publicationDelayMs: null, detectedAt: null, clockOffsetMs: null } },
     ];
+    let jobsRevision = '1', reads = 10, paginated = false;
     await page.route('http://tool.test/**', async route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/') return route.fulfill({ contentType: 'text/html', body: html });
       if (path === '/app.js') return route.fulfill({ contentType: 'application/javascript', body: app });
       if (path === '/style.css') return route.fulfill({ contentType: 'text/css', body: css });
-      if (path === '/api/status') return route.fulfill({ json: {
+      if (path === '/api/status') {
+        const headers = route.request().headers();
+        const page = Number(headers['x-tool-jobs-page']);
+        const revision = paginated ? `${jobsRevision}:${page}` : jobsRevision;
+        return route.fulfill({ json: {
         config: DEFAULT_CONFIG, phase: 'watching', note: 'Đang theo dõi bài mới.', account: null,
-        source: READ_TARGETS['test-profile'], posts: [], jobs, logs: [],
-        metrics: { reads: 10, queries: 10, decodedBytes: 0, lastQueryMs: null }, nextComment: '',
-      } });
+        source: READ_TARGETS['test-profile'], posts: [],
+        revisions: { jobs: revision, logs: '1' }, activeTimings: {},
+        ...(paginated ? { history: { page, pageSize: 5, total: jobs.length, pages: 2 } } : {}),
+        ...(headers['x-tool-jobs-revision'] === revision ? {} : { jobs: paginated ? jobs.slice((page - 1) * 5, page * 5) : jobs }),
+        ...(headers['x-tool-logs-revision'] === '1' ? {} : { logs: [] }),
+        metrics: { reads, queries: reads, decodedBytes: 0, lastQueryMs: null }, nextComment: '',
+        } });
+      }
       return route.fulfill({ body: '' });
     });
     await page.goto('http://tool.test/');
     await page.waitForFunction(() => document.getElementById('timing-count')?.textContent === '8 lượt xử lý');
+    assert.equal(await page.locator('.timing-job-row').count(), 0);
     await page.click('#timing-tab');
     assert.equal(await page.locator('#overview-panel').isVisible(), false);
     assert.equal(await page.locator('#timing-tab').getAttribute('aria-selected'), 'true');
@@ -146,11 +215,13 @@ test('timing tab measures dispatch independently of confirmation and hides verif
     assert.equal(await rows.nth(7).locator('td').nth(2).innerText(), 'Thử bài có sẵn');
     assert.equal(await rows.nth(7).locator('td').last().innerText(), '—\nThử bài có sẵn');
     assert.equal(await page.locator('.timing-slowest').count(), 3);
+    assert.equal(await page.locator('.timing-action-details').count(), 0);
     const invalid = await page.evaluate(job => (window as any).timingForJob(job), { ...complete,
       timing: { ...complete.timing, publicationDelayMs: null }, actions: complete.actions.map(a => ({ ...a, timing: { ...a.timing, fromPublicationMs: null } })) });
     assert.equal(invalid.detection, null);
     assert.equal(invalid.total, null);
     await page.locator('.timing-diagnostics summary').first().click();
+    await page.locator('.timing-diagnostics').first().locator('.timing-clock-note').waitFor();
     assert.match(await page.locator('.timing-diagnostics').first().innerText(), /Giờ máy nhanh hơn Facebook 3 phút 56 giây/);
     assert.doesNotMatch(await page.locator('.timing-diagnostics').first().innerText(), /Sai số|±/);
     const trace = page.locator('.timing-diagnostics').first().locator('.action-trace[data-action="share"]');
@@ -180,8 +251,17 @@ test('timing tab measures dispatch independently of confirmation and hides verif
     assert.equal(legacy.timing.total, 18.8, 'legacy conversion uses submission end, never confirmation totals');
     assert.match(legacy.view, /Kết thúc thao tác gửi · dữ liệu cũ/);
     assert.doesNotMatch(legacy.view, /Chờ và đọc phản hồi Facebook/);
-    await page.evaluate(() => (window as any).refresh());
+    await page.evaluate(() => { (window as any).previousTimingRow = document.querySelector('.timing-job-row'); });
+    reads++;
+    await page.evaluate(() => (window as any).refresh(true));
+    assert.equal(await page.locator('#reads').textContent(), '11 / 11');
+    assert.equal(await page.evaluate(() => (window as any).previousTimingRow === document.querySelector('.timing-job-row')), true);
+    jobsRevision = '2';
+    await page.evaluate(() => (window as any).refresh(true));
+    assert.equal(await page.evaluate(() => (window as any).previousTimingRow === document.querySelector('.timing-job-row')), false);
     assert.equal(await page.locator('.timing-diagnostics').first().getAttribute('open'), '');
+    await page.locator('.timing-diagnostics summary').nth(6).click();
+    await page.locator('.timing-diagnostics').nth(6).locator('.action-trace').first().waitFor();
     assert.match(await page.locator('.timing-diagnostics').nth(6).textContent() || '', /chưa có dữ liệu đo từng bước/);
     await trace.screenshot({ path: 'data/timing-steps-preview.png' });
     assert.equal(await page.evaluate(() => (window as any).secondsText(244)), '4 phút 4 giây');
@@ -191,5 +271,22 @@ test('timing tab measures dispatch independently of confirmation and hides verif
     const likeCard = page.locator('#jobs > .job').first().locator('.action-result').first();
     assert.match(await likeCard.innerText(), /Chuẩn bị và gửi: 6,7 giây/);
     assert.match(await likeCard.innerText(), /Đã gửi sau khi đăng: ≈ 11,7 giây/);
+    paginated = true;
+    await page.evaluate(() => (window as any).refresh(true));
+    const nav = page.locator('#jobs-pagination');
+    assert.equal(await page.locator('#jobs > .job').count(), 5);
+    assert.match(await nav.innerText(), /1–5 \/ 8 bài/);
+    await nav.getByRole('button', { name: 'Trang 2' }).click();
+    await nav.locator('[aria-current="page"][aria-label="Trang 2"]').waitFor();
+    assert.equal(await page.locator('#jobs > .job').count(), 3);
+    assert.match(await nav.innerText(), /6–8 \/ 8 bài/);
+    await page.evaluate(() => (window as any).refresh(true));
+    assert.equal(await nav.locator('[aria-current="page"]').textContent(), '2');
+    await page.click('#timing-tab');
+    assert.equal(await rows.count(), 3);
+    assert.equal(await page.locator('#jobs > .job').count(), 0);
+    await page.locator('#timing-pagination').getByRole('button', { name: 'Trước' }).click();
+    await page.locator('#timing-pagination [aria-current="page"][aria-label="Trang 1"]').waitFor();
+    assert.equal(await rows.count(), 5);
   } finally { await browser.close(); }
 });

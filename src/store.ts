@@ -1,11 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { SCAN_SNAPSHOT_LIMIT, type ScanDecision, type ScanSnapshot } from './scan-history.ts';
 import { DEFAULT_CONFIG, validateConfig, planContent, ACTIONS, type Config, type ContentPlan, type ActionName } from './config.ts';
 import type { Job, Post, ActionResult, ActionState, LogEntry, JobTiming, ActionTiming } from './types.ts';
 const now = () => new Date().toISOString();
+const JOB_HISTORY_LIMIT = 20;
+const JOB_PAGE_SIZE = 5;
+const LOG_DISPLAY_LIMIT = 50;
+const LOG_PAGE_SIZE = 10;
+const newestJobs = 'ORDER BY created_at DESC, rowid DESC';
+const jobDedupe = (accountId: string, sourceId: string, postId: string, mode: Config['mode']) =>
+  `${accountId}:${sourceId}:${postId}:${mode === 'dry-run' ? 'simulation' : 'write'}`;
+const dedupeHash = (key: string) => createHash('sha256').update(key).digest('hex');
 export class Store {
   db: DatabaseSync;
+  jobsRevision = 0;
+  logsRevision = 0;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;
@@ -17,6 +27,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, dedupe TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL,
         account_id TEXT NOT NULL, source_id TEXT NOT NULL, post_json TEXT NOT NULL, mode TEXT NOT NULL,
         created_at TEXT NOT NULL, plan_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS retired_jobs (dedupe_hash TEXT PRIMARY KEY) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS actions (job_id TEXT NOT NULL REFERENCES jobs(id), name TEXT NOT NULL, state TEXT NOT NULL,
         code TEXT, started_at TEXT, submitted_at TEXT, finished_at TEXT, external_id TEXT, external_url TEXT,
         PRIMARY KEY(job_id, name));
@@ -33,6 +44,7 @@ export class Store {
     // Never resend an interrupted external submission automatically.
     this.db.prepare("UPDATE actions SET state='unknown', code='RESULT_UNCONFIRMED', finished_at=? WHERE state='submitting'").run(now());
     this.db.prepare("UPDATE actions SET state='ready', code='INTERRUPTED_BEFORE_SEND' WHERE state='preparing'").run();
+    this.pruneJobs();
     this.pruneLogs();
   }
   get(key: string): any { const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any; return row ? JSON.parse(row.value) : null; }
@@ -66,7 +78,8 @@ export class Store {
       for (const post of input.posts) {
         const decide = (reason: ScanDecision['reason'], jobId?: string) => input.onDecision?.({ postId: post.post_id, reason, ...(jobId ? { jobId } : {}) });
         if (input.previous.has(post.post_id)) { decide('previous_window'); continue; }
-        if (this.hasSeen(input.accountId, input.sourceId, post.post_id)) { decide('already_seen'); continue; }
+        if (this.hasSeen(input.accountId, input.sourceId, post.post_id) ||
+          this.isRetired(jobDedupe(input.accountId, input.sourceId, post.post_id, input.config.mode))) { decide('already_seen'); continue; }
         if (post.creation_time > input.serverNow + 2) { decide('future_time'); throw Error('POST_TIME_INVALID'); }
         if (post.creation_time < input.floor) { this.recordSeen(input.accountId, input.sourceId, post, input.sessionId, 'older_than_session'); decide('older_than_session'); continue; }
         const id = this.insertJob(input.accountId, input.sourceId, input.sessionId, post, input.config, input.timings?.[post.post_id]);
@@ -78,11 +91,13 @@ export class Store {
     });
   }
   insertJob(accountId: string, sourceId: string, sessionId: string, post: Post, config: Config, timing?: JobTiming): string {
-    const dedupe = `${accountId}:${sourceId}:${post.post_id}:${config.mode === 'dry-run' ? 'simulation' : 'write'}`;
+    const dedupe = jobDedupe(accountId, sourceId, post.post_id, config.mode);
     const existing = this.db.prepare('SELECT id FROM jobs WHERE dedupe=?').get(dedupe) as any;
     if (existing) return existing.id;
+    if (this.isRetired(dedupe)) throw Error('JOB_HISTORY_EXPIRED');
     const id = randomUUID(), plan = this.nextPlan(config);
     this.db.prepare('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)').run(id, dedupe, sessionId, accountId, sourceId, JSON.stringify(post), config.mode, now(), JSON.stringify(plan));
+    this.jobsRevision++;
     if (timing) this.db.prepare('INSERT INTO job_timings VALUES (?,?)').run(id, JSON.stringify(timing));
     for (const action of ACTIONS) this.db.prepare('INSERT INTO actions(job_id,name,state) VALUES (?,?,?)')
       .run(id, action, !config.actions[action] ? 'skipped' : config.mode === 'dry-run' ? 'simulated' : 'ready');
@@ -108,7 +123,44 @@ export class Store {
       actions: actions.map(a => ({ name: a.name, state: a.state, code: a.code, startedAt: a.started_at, submittedAt: a.submitted_at,
         finishedAt: a.finished_at, externalId: a.external_id, externalUrl: a.external_url, timing: a.timing_json ? JSON.parse(a.timing_json) : null })) };
   }
-  jobs(limit = 60): Job[] { return (this.db.prepare('SELECT id FROM jobs ORDER BY created_at DESC LIMIT ?').all(limit) as any[]).map(r => this.job(r.id)!); }
+  jobs(limit = JOB_HISTORY_LIMIT, offset = 0): Job[] {
+    const rows = this.db.prepare(`SELECT id FROM jobs ${newestJobs} LIMIT ? OFFSET ?`).all(limit, offset) as { id: string }[];
+    return rows.map(({ id }) => this.job(id)!);
+  }
+  jobPage(requested: number) {
+    const row = this.db.prepare('SELECT COUNT(*) AS total FROM jobs').get() as { total: number };
+    const total = Math.min(row.total, JOB_HISTORY_LIMIT);
+    const pages = Math.max(1, Math.ceil(total / JOB_PAGE_SIZE));
+    return { page: Math.min(pages, Math.max(1, Number.isSafeInteger(requested) ? requested : 1)), pageSize: JOB_PAGE_SIZE, total, pages };
+  }
+  private isRetired(dedupe: string) {
+    return !!this.db.prepare('SELECT 1 FROM retired_jobs WHERE dedupe_hash=?').get(dedupeHash(dedupe));
+  }
+  pruneJobs(protectedIds: readonly string[] = []): string[] {
+    const protectedJobs = new Set(protectedIds);
+    const oldJobs = this.db.prepare(`SELECT id, dedupe FROM jobs ${newestJobs} LIMIT -1 OFFSET ?`)
+      .all(JOB_HISTORY_LIMIT) as { id: string; dedupe: string }[];
+    const expired = oldJobs.filter(({ id }) => !protectedJobs.has(id));
+    if (!expired.length) return [];
+    this.transaction(() => {
+      const retire = this.db.prepare('INSERT OR IGNORE INTO retired_jobs VALUES (?)');
+      const removeSnapshot = this.db.prepare('DELETE FROM scan_snapshots WHERE job_id=?');
+      const removeActionTimings = this.db.prepare('DELETE FROM action_timings WHERE job_id=?');
+      const removeActions = this.db.prepare('DELETE FROM actions WHERE job_id=?');
+      const removeJobTiming = this.db.prepare('DELETE FROM job_timings WHERE job_id=?');
+      const removeJob = this.db.prepare('DELETE FROM jobs WHERE id=?');
+      for (const { id, dedupe } of expired) {
+        retire.run(dedupeHash(dedupe));
+        removeSnapshot.run(id);
+        removeActionTimings.run(id);
+        removeActions.run(id);
+        removeJobTiming.run(id);
+        removeJob.run(id);
+      }
+    });
+    this.jobsRevision++;
+    return expired.map(({ id }) => id);
+  }
   transition(jobId: string, name: ActionName, from: ActionState[], to: ActionState,
     detail: { code?: string; externalId?: string; externalUrl?: string; timing?: ActionTiming } = {}): boolean {
     const timestamp = now();
@@ -123,6 +175,7 @@ export class Store {
     if (changed && detail.timing) this.db.prepare('INSERT INTO action_timings VALUES (?,?,?) ON CONFLICT(job_id,name) DO UPDATE SET details_json=excluded.details_json').run(jobId, name, JSON.stringify(detail.timing));
     if (changed && (to === 'ready' || ['RECONCILED_EXISTING', 'MANUALLY_CONFIRMED'].includes(detail.code || '')))
       this.db.prepare('DELETE FROM action_timings WHERE job_id=? AND name=?').run(jobId, name);
+    if (changed) this.jobsRevision++;
     return changed;
     });
   }
@@ -132,13 +185,24 @@ export class Store {
     this.log('warning', 'MANUAL_RECONCILIATION', `Người vận hành xác nhận ${name}: ${result === 'done' ? 'đã thành công' : 'chưa gửi'}.`, jobId);
   }
   evidence(jobId: string, name: ActionName, detail: { externalId?: string; externalUrl?: string }) {
-    this.db.prepare("UPDATE actions SET external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url) WHERE job_id=? AND name=? AND state='submitting'")
+    const result = this.db.prepare("UPDATE actions SET external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url) WHERE job_id=? AND name=? AND state='submitting'")
       .run(detail.externalId ?? null, detail.externalUrl ?? null, jobId, name);
+    if (result.changes) this.jobsRevision++;
   }
   log(level: LogEntry['level'], code: string, text: string, jobId: string | null = null) {
     this.db.prepare('INSERT INTO logs(at,level,code,text,job_id) VALUES (?,?,?,?,?)').run(now(), level, code, text, jobId);
+    this.logsRevision++;
   }
   logs(limit = 100): LogEntry[] { return this.db.prepare('SELECT id,at,level,code,text,job_id AS jobId FROM logs ORDER BY id DESC LIMIT ?').all(limit) as any; }
+  logPage(before: number | null) {
+    const { oldestId } = this.db.prepare('SELECT MIN(id) AS oldestId FROM (SELECT id FROM logs ORDER BY id DESC LIMIT ?)')
+      .get(LOG_DISPLAY_LIMIT) as { oldestId: number | null };
+    const entries = this.db.prepare(`SELECT id,at,level,text FROM logs
+      WHERE id >= ? AND id < COALESCE(?, 9223372036854775807)
+      ORDER BY id DESC LIMIT ?`)
+      .all(oldestId, before, LOG_PAGE_SIZE) as Pick<LogEntry, 'id' | 'at' | 'level' | 'text'>[];
+    return { entries, oldestId, limit: LOG_DISPLAY_LIMIT, revision: this.logsRevision };
+  }
   saveScanSnapshot(trigger: 'detection' | 'read_error' | 'stop', jobId: string | null, snapshot: ScanSnapshot) {
     const json = JSON.stringify(snapshot);
     this.transaction(() => {
@@ -151,6 +215,9 @@ export class Store {
       .all(Math.min(SCAN_SNAPSHOT_LIMIT, Math.max(1, limit))) as any[]).map(row => ({ id: row.id, at: row.at,
         trigger: row.trigger, jobId: row.job_id, snapshot: JSON.parse(row.details_json) as ScanSnapshot }));
   }
-  pruneLogs() { this.db.prepare("DELETE FROM logs WHERE at < ?").run(new Date(Date.now() - 30 * 86400_000).toISOString()); }
+  pruneLogs() {
+    const result = this.db.prepare("DELETE FROM logs WHERE at < ?").run(new Date(Date.now() - 30 * 86400_000).toISOString());
+    if (result.changes) this.logsRevision++;
+  }
   close() { this.db.close(); }
 }

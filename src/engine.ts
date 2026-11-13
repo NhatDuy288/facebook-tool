@@ -25,7 +25,7 @@ export class Engine {
   activeTraces = new Map<string, { trace: ActionTrace; timing: ActionTiming }>();
   constructor(store: Store, reader: Reader, adapter: ActionAdapter) { this.store = store; this.reader = reader; this.adapter = adapter; }
   busy() { return ['initializing', 'watching', 'stopping'].includes(this.phase) || !!this.activeJob || this.queue.length > 0; }
-  status() {
+  private statusSummary() {
     const config = this.store.config();
     const observation = Object.values(this.lastRead?.observations ?? {})[0];
     return { phase: this.phase, note: this.note, config, account: this.account,
@@ -37,11 +37,28 @@ export class Engine {
         facebookClockOffsetMs: observation?.clockOffsetMs ?? null, clockUncertaintyMs: observation?.uncertaintyMs ?? null,
         errors: this.consecutiveErrors, nodeMemoryMB: Math.round(process.memoryUsage().rss / 1048576) },
       scanHistory: { ...this.scanHistory.summary(), pendingSnapshots: this.pendingScanSnapshots.length },
-      activeJob: this.activeJob, queuedJobs: this.queue.length, jobs: this.store.jobs().map(job => ({ ...job,
+      activeJob: this.activeJob, queuedJobs: this.queue.length };
+  }
+  status() {
+    return { ...this.statusSummary(), jobs: this.store.jobs().map(job => ({ ...job,
         actions: job.actions.map(action => {
           const active = this.activeTraces.get(job.id + ':' + action.name);
           return active ? { ...action, timing: { ...active.timing, trace: active.trace.snapshot() } } : action;
         }) })), logs: this.store.logs() };
+  }
+  dashboardStatus(jobsRevision: string, logsRevision: string, requestedPage = 1, streamLogs = false) {
+    const history = this.store.jobPage(requestedPage);
+    const revisions = { jobs: `${this.store.jobsRevision}:${history.page}`, logs: String(this.store.logsRevision) };
+    return {
+      ...this.statusSummary(),
+      revisions,
+      history,
+      jobs: revisions.jobs === jobsRevision ? undefined : this.store.jobs(history.pageSize, (history.page - 1) * history.pageSize),
+      logFeed: streamLogs || undefined,
+      logs: streamLogs || revisions.logs === logsRevision ? undefined : this.store.logs(),
+      activeTimings: Object.fromEntries([...this.activeTraces].map(([key, { trace, timing }]) =>
+        [key, { ...timing, trace: trace.snapshot() }])),
+    };
   }
   saveConfig(input: unknown): Config {
     const current = this.store.config();
@@ -72,6 +89,10 @@ export class Engine {
       try { this.store.saveScanSnapshot(pending.trigger, pending.jobId, pending.snapshot); }
       catch { try { this.store.log('warning', 'SCAN_HISTORY_SAVE_FAILED', 'Không lưu được lịch sử quét chẩn đoán.'); } catch { /* Must not alter action state. */ } }
     }
+  }
+  private pruneJobHistory() {
+    const protectedIds = this.activeJob ? [this.activeJob, ...this.queue] : this.queue;
+    for (const id of this.store.pruneJobs(protectedIds)) this.jobClocks.delete(id);
   }
   baseline(): void {
     if (this.closed || this.busy()) throw Error('BUSY');
@@ -146,6 +167,7 @@ export class Engine {
           if (job.mode !== 'dry-run') this.enqueue(job.id);
         }
         this.flushScanSnapshots();
+        if (jobs.length) this.pruneJobHistory();
       } catch (error) {
         if (signal.aborted) throw error;
         const code = errorCode(error); this.consecutiveErrors++;
@@ -204,7 +226,7 @@ export class Engine {
     const job = this.store.testJob(this.account.id, READ_TARGETS[config.target].sourceId, this.sessionId, post, config, requestedAt);
     if (!this.jobClocks.has(job.id) && job.timing?.requestedAt === requestedAt) this.jobClocks.set(job.id, { referenceMono, requestedMono: referenceMono, readCompletedMono: referenceMono,
       origin: 'existing-test', publicationDelayMs: null, uncertaintyMs: null });
-    this.enqueue(job.id); return job.id;
+    this.enqueue(job.id); this.pruneJobHistory(); return job.id;
   }
   enqueue(id: string) {
     if (this.queue.includes(id) || this.activeJob === id) return;
@@ -255,7 +277,10 @@ export class Engine {
           tabsMs: performance.now() - dispatchStarted };
         // Each worker owns a separate tab; all enabled actions enter together.
         await Promise.all(ACTIONS.map(name => this.perform(name, job, signal, preparation)));
-      } finally { await this.adapter.release?.(); this.activeJob = null; this.flushScanSnapshots(); }
+      } finally {
+        try { await this.adapter.release?.(); }
+        finally { this.activeJob = null; this.flushScanSnapshots(); this.pruneJobHistory(); }
+      }
     }
   }
   async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation): Promise<void> {
@@ -311,7 +336,10 @@ export class Engine {
     if (this.phase === 'initializing') { this.rememberScanSnapshot('read_error'); this.flushScanSnapshots(); }
     this.abort.abort(); this.queue = []; this.nextReadAt = null;
     this.phase = 'error'; this.note = message(code);
-    try { this.store.log('error', code, this.note); } catch { this.note = message('DATABASE_FAILED'); }
+    try {
+      this.pruneJobHistory();
+      this.store.log('error', code, this.note);
+    } catch { this.note = message('DATABASE_FAILED'); }
     void this.adapter.stop();
   }
   stop(): Promise<void> {
@@ -325,6 +353,7 @@ export class Engine {
     await this.adapter.stop();
     await Promise.allSettled([this.workTask, this.dispatchTask].filter(Boolean));
     this.rememberScanSnapshot('stop'); this.flushScanSnapshots();
+    this.pruneJobHistory();
     this.phase = 'idle'; this.note = message('STOPPED');
     this.store.log('info', 'STOPPED', this.note);
   }

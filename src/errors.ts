@@ -29,6 +29,7 @@ const MESSAGES: Record<string, string> = {
   RESULT_UNCONFIRMED: 'Đã bắt đầu gửi nhưng chưa xác nhận được kết quả. Cần kiểm tra thủ công trước khi gửi lại.',
   STOPPED: 'Đã dừng. Các thao tác chưa gửi sẽ không được gửi tiếp.',
   JOB_NOT_RETRYABLE: 'Chỉ tiếp tục thao tác chắc chắn chưa gửi; kết quả chưa rõ cần kiểm tra thủ công.',
+  JOB_HISTORY_EXPIRED: 'Bài này đã được ghi nhận trước đây và kết quả cũ đã hết hạn lưu.',
   TEST_SOURCE_ONLY: 'Chức năng thử bài có sẵn chỉ áp dụng cho nguồn Nguồn thử nghiệm trong chế độ test.',
   NO_BASELINE: 'Hãy lấy mốc 3 bài trước.',
   DATABASE_FAILED: 'Không lưu được dữ liệu. Đã dừng để tránh mất trạng thái hoặc gửi trùng.',

@@ -16,6 +16,30 @@ function fixture(path = ':memory:') {
     previous: new Set(baseline.map(p => p.post_id)), posts: [post('6'), ...baseline.slice(0, 4)], config } };
 }
 
+test('result retention removes old details and preserves deduplication and pending work', () => {
+  const { store, input } = fixture();
+  try {
+    const add = (id: number) => store.testJob(input.accountId, input.sourceId, input.sessionId, post(String(id)), input.config);
+    const oldest = add(100), queued = add(101);
+    store.db.prepare('INSERT INTO action_timings VALUES (?, ?, ?)').run(oldest.id, 'like', '{}');
+    store.saveScanSnapshot('detection', oldest.id, { version: 1, capacity: 60,
+      context: { sessionId: input.sessionId, accountId: input.accountId, sourceId: input.sourceId, serverFloor: input.floor }, reads: [] });
+    for (let id = 102; id <= 121; id++) add(id);
+    assert.deepEqual(store.pruneJobs([queued.id]), [oldest.id]);
+    assert.equal(store.job(oldest.id), null);
+    assert.equal(store.job(queued.id)?.id, queued.id);
+    assert.equal(store.scanSnapshots().length, 0);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM action_timings').get()?.count, 0);
+    assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.throws(() => add(100), /JOB_HISTORY_EXPIRED/);
+    assert.equal(store.acceptWindow({ ...input, posts: [post('100')] }).length, 0);
+    assert.deepEqual(store.pruneJobs(), [queued.id]);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM jobs').get()?.count, 20);
+    assert.deepEqual(store.jobPage(999), { page: 4, pageSize: 5, total: 20, pages: 4 });
+    assert.deepEqual(store.jobs(5, 15).map(job => job.post.post_id), ['106', '105', '104', '103', '102']);
+  } finally { store.close(); }
+});
+
 test('scan decisions follow the actual dedupe and time checks without changing acceptance', () => {
   const f = fixture(), decisions: ScanDecision[] = [];
   try {

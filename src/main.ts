@@ -55,7 +55,17 @@ const server = createServer(async (request, response) => {
   if (request.headers['x-tool-key'] !== key) { reply(403, {}); return; }
   if (closing) { reply(200, { closing: true, phase: 'stopping' }); return; }
   if (request.method === 'GET' && request.url === '/api/status') {
-    reply(200, { ...engine.status(), sources: READ_TARGETS, browser: { channel: browser.channel, sessionSaved: store.config().keepSession }, closing }); return;
+    const jobsRevision = request.headers['x-tool-jobs-revision'], logsRevision = request.headers['x-tool-logs-revision'];
+    const status = typeof jobsRevision === 'string' && typeof logsRevision === 'string'
+      ? engine.dashboardStatus(jobsRevision, logsRevision, Number(request.headers['x-tool-jobs-page']), request.headers['x-tool-log-feed'] === '1')
+      : engine.status();
+    reply(200, { ...status, sources: READ_TARGETS, browser: { channel: browser.channel, sessionSaved: status.config.keepSession }, closing }); return;
+  }
+  if (request.method === 'GET' && (request.url === '/api/logs' || request.url?.startsWith('/api/logs?'))) {
+    const before = new URL(request.url, origin).searchParams.get('before');
+    const cursor = before === null ? null : Number(before);
+    if (cursor !== null && (!Number.isSafeInteger(cursor) || cursor < 1)) { reply(400, { message: 'Mốc tải nhật ký không hợp lệ.' }); return; }
+    reply(200, store.logPage(cursor)); return;
   }
   if (request.method === 'GET' && request.url === '/api/scan-history') {
     reply(200, engine.scanDiagnostics()); return;
