@@ -126,6 +126,43 @@ test('incremental deferred Video frames require an already registered edge, incl
   assert.equal(inspectAuthWindow([final]).usable, false);
 });
 
+test('video controls under lightweight attachment style info preserve the three verified timeline posts', () => {
+  const first = videoInitial();
+  const edges = first.data.user.timeline_list_feed_units.edges;
+  edges.push(edge('102'), edge('103'));
+  const story = edges[0].node;
+  for (const owner of [story, story.comet_sections.content.story]) {
+    const renderer = owner.attachments[0].styles;
+    renderer.__typename = 'StoryAttachmentUnifiedLightweightVideoStyleRenderer';
+    renderer.attachment.style_infos = [{ __typename: 'VideoAttachmentStyleInfo', containing_story: {
+      id: 'video-controls-story', attachments: [{ media: { __typename: 'Video', id: 'controls-video' } }],
+    } }];
+  }
+  const records = [first];
+  for (const mirror of [false, true]) {
+    for (const data of [{ dubbed_track_mapping: { message: { text: 'video-marker' } } },
+      { id: 'controls-video', instream_extra_config: {}, instream_video_ad_breaks_comet: {} }]) {
+      const deferred = videoPatch(mirror, data);
+      deferred.path.splice(-1, 1, 'style_infos', 0, 'containing_story', 'attachments', 0, 'media');
+      deferred.extensions.is_final = false;
+      records.push(deferred);
+    }
+  }
+  records.at(-1).extensions.is_final = true;
+  const result = inspectAuthWindow(records, 'video-marker');
+  assert.equal(result.usable, true);
+  assert.equal(result.safeInspection?.assembly.ignoredVideoPatches, 4);
+  assert.deepEqual(result.posts.map(post => post.post_id), ['101', '102', '103']);
+  assert.deepEqual(result.markerMatchIds, []);
+
+  for (const change of [(frame: any) => { frame.data.id = 'other-video'; },
+    (frame: any) => { frame.data.creation_time = 1; }, (frame: any) => { frame.path[frame.path.length - 2] = 1; }]) {
+    const invalid = structuredClone(records);
+    change(invalid.at(-1));
+    assert.equal(inspectAuthWindow(invalid).reasonCode, 'UNVERIFIED_WINDOW');
+  }
+});
+
 test('ignored Video patches retain final-frame, continuation and original error requirements', () => {
   const pending = videoPatch(); pending.extensions.is_final = false;
   assert.equal(inspectAuthWindow([videoInitial(), pending]).reasonCode, 'FINAL_FRAME_REQUIRED');

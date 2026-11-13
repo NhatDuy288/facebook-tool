@@ -12,6 +12,22 @@ const VIDEO_FIELDS = new Set(('dubbed_track_mapping can_viewer_share creation_st
   + 'live_end_text is_huddle is_live_audio_room_v2_broadcast associated_paid_online_event '
   + 'is_live_streaming is_paid_virtual_event_premium_content').split(' '));
 
+const isIndex = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+function attachmentVideo(story: Frame, path: (string | number)[]): unknown {
+  const [attachments, attachmentIndex, styles, attachment, field, styleIndex, containingStory, nestedAttachments,
+    nestedIndex, nestedMedia] = path;
+  if (attachments !== 'attachments' || !isIndex(attachmentIndex) || styles !== 'styles' || attachment !== 'attachment') return;
+  const renderer = story.attachments?.[attachmentIndex]?.styles;
+  if (path.length === 5 && field === 'media') return renderer?.attachment?.media;
+  if (path.length !== 10 || field !== 'style_infos' || !isIndex(styleIndex) || containingStory !== 'containing_story'
+    || nestedAttachments !== 'attachments' || !isIndex(nestedIndex) || nestedMedia !== 'media'
+    || renderer?.__typename !== 'StoryAttachmentUnifiedLightweightVideoStyleRenderer') return;
+  const styleInfo = renderer.attachment?.style_infos?.[styleIndex];
+  if (styleInfo?.__typename !== 'VideoAttachmentStyleInfo') return;
+  return styleInfo.containing_story?.attachments?.[nestedIndex]?.media;
+}
+
 export function normalizeStreamFrames(input: any[]) {
   const diagnostics = { convertedEdgePatches: 0, rejectedEdgePatches: 0, duplicateEdgePatches: 0,
     unsupportedScopedPatches: 0, ignoredVideoPatches: 0, initialEdgesObserved: 0, assembledPositions: 0 };
@@ -54,10 +70,8 @@ export function normalizeStreamFrames(input: any[]) {
           || Object.hasOwn(story, '__typename') && story.__typename !== 'Story'
           || Object.hasOwn(story, 'post_id') && story.post_id !== root.post_id) story = null;
       }
-      if (object(story) && rest.length === 5 && rest[0] === 'attachments'
-        && Number.isSafeInteger(rest[1]) && Number(rest[1]) >= 0 && rest[2] === 'styles'
-        && rest[3] === 'attachment' && rest[4] === 'media') {
-        const media = story.attachments?.[Number(rest[1])]?.styles?.attachment?.media;
+      if (object(story)) {
+        const media = attachmentVideo(story, rest);
         const keys = Object.keys(frame.data);
         if (object(media) && media.__typename === 'Video' && typeof media.id === 'string' && media.id
           && keys.length > 0 && keys.every(key => VIDEO_FIELDS.has(key))
