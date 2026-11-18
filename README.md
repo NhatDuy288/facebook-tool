@@ -99,6 +99,6 @@ npm.cmd run test:reader
 
 Các kiểm thử dùng dữ liệu giả lập, không đăng lên Facebook thật. Kiểm tra giữ focus/cửa sổ trên Windows được bật riêng bằng `TOOL_FOCUS_TEST=1`; cần desktop tương tác và mở cửa sổ trình duyệt thử nghiệm.
 
-Mã chính: `src/engine.ts` điều phối, `src/store.ts` lưu SQLite, `src/facebook/` điều khiển trình duyệt/tương tác, `src/facebook/feed/` đọc và xác minh danh sách, `public/` là UI. Yêu cầu nghiệp vụ gọn nằm trong [BRD](BRD-Facebook-Automation.md).
+Mã chính: `src/engine.ts` điều phối, `src/store.ts` lưu SQLite, `src/facebook/` điều khiển trình duyệt/tương tác, `src/facebook/feed/` đọc và xác minh danh sách, `public/` là UI.
 
 Tool tự động hóa trình duyệt, không phải ứng dụng chính thức của Meta. Thay đổi giao diện Facebook có thể cần cập nhật bộ đọc/thao tác; khi không xác minh được dữ liệu, tool dừng phần tương ứng. Chưa có cam kết chạy ổn định 24/7 hoặc hỗ trợ mọi dạng Reels/Stories/live.
