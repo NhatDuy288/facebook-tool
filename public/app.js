@@ -214,8 +214,8 @@ async function loadLogs(onScroll=false){
   const list=$('logs');
   const loadHead=loadedLogRevision===null||(Number(logsRevision)>loadedLogRevision&&list.scrollTop<=1);
   const before=logRows.at(-1)?.id;
-  if(!loadHead&&(!onScroll||before===undefined||before<=oldestLogId||
-    list.scrollTop+list.clientHeight<list.scrollHeight-48))return;
+  const nearEnd=onScroll?list.scrollTop+list.clientHeight>=list.scrollHeight-48:list.clientHeight>=list.scrollHeight;
+  if(!loadHead&&(before===undefined||before<=oldestLogId||!nearEnd))return;
   logLoading=true;
   try{
     const page=await api(loadHead?'/api/logs':`/api/logs?before=${before}`);
@@ -235,16 +235,20 @@ async function loadLogs(onScroll=false){
       list.append(...older.map(logLine));
     }
     setLogStatus(logRows.length?'':'Chưa có nhật ký.');
+    if(!loadHead&&logRows.at(-1)?.id===before)return;
   }catch{
     setLogStatus('Chưa tải được nhật ký. Hãy cuộn lại để thử.');
+    return;
   }finally{
     logLoading=false;
   }
+  void loadLogs();
 }
 new IntersectionObserver(([entry])=>{
   logVisible=entry.isIntersecting;
   if(logVisible)void loadLogs();
 }).observe($('log-section'));
+new ResizeObserver(()=>{void loadLogs()}).observe($('logs'));
 $('logs').addEventListener('scroll',()=>{void loadLogs(true)},{passive:true});
 function renderPagination(history){
   const key=JSON.stringify(history??null);

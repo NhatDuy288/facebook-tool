@@ -60,6 +60,31 @@ test('journal fetches ten rows at a time on scroll and keeps the newest fifty', 
     assert.equal(await rows.count(), 50);
     assert.equal(await rows.last().locator('span').textContent(), 'Sự kiện 17');
     assert.deepEqual(cursors, [null, 56, 46, 36, 26, null]);
+
+    cursors.length = 0;
+    await page.reload();
+    const journal = page.locator('#log-section');
+    const results = page.locator('section').filter({ has: page.locator('#jobs') });
+    await journal.scrollIntoViewIfNeeded();
+    await waitForRows(10);
+
+    await list.evaluate(node => {
+      const jobs = document.getElementById('jobs')!;
+      // Make the results tall enough for the journal to show 15 rows at once.
+      const rowHeight = node.firstElementChild!.getBoundingClientRect().height;
+      jobs.style.minHeight = '1200px';
+      jobs.style.minHeight = `${1200 + rowHeight * 15 - node.clientHeight}px`;
+    });
+    await waitForRows(20);
+    assert.deepEqual(cursors, [null, 57]);
+    const journalBox = (await journal.boundingBox())!;
+    const resultsBox = (await results.boundingBox())!;
+    assert.equal(journalBox.y + journalBox.height, resultsBox.y + resultsBox.height);
+
+    await page.setViewportSize({ width: 390, height: 500 });
+    const stackedJournal = (await journal.boundingBox())!;
+    assert.ok(stackedJournal.y + stackedJournal.height < (await results.boundingBox())!.y);
+    assert.equal(await list.evaluate(node => node.clientHeight), 290);
   } finally { store.close(); await browser.close(); }
 });
 

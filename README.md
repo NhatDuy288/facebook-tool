@@ -85,7 +85,7 @@ Xuất lịch sử bằng `node scripts/export-scan-history.mjs`; kết quả n�
 
 **Kết quả tương tác** và **Thời gian từng bài** hiển thị tối đa 20 bài gần nhất, 5 bài mỗi trang. Tool dọn chi tiết các công việc cũ khỏi SQLite và giữ dấu chống gửi trùng. Các công việc đang chạy hoặc đang chờ trong hàng đợi được giữ đến khi xử lý xong. Bản chụp quét gắn với công việc được dọn cùng công việc.
 
-**Nhật ký** hiển thị tối đa 50 dòng gần nhất, tải thêm 10 dòng mỗi lần cuộn xuống. Nhật ký được lưu 30 ngày. Dashboard cập nhật dữ liệu thay đổi và dựng phần hiển thị chi tiết thời gian khi mở.
+**Nhật ký** nằm dưới cấu hình, có chiều cao theo cột kết quả bên cạnh trên màn hình rộng; hiển thị tối đa 50 dòng gần nhất. Tool tải thêm từng 10 dòng khi cuộn xuống hoặc khung vẫn còn khoảng trống, và kiểm tra lại khi kích thước thay đổi. Nhật ký được lưu 30 ngày. Dashboard cập nhật dữ liệu thay đổi và dựng phần hiển thị chi tiết thời gian khi mở.
 
 ## Dữ liệu riêng và chuyển máy
 
