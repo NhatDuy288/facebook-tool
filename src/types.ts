@@ -41,13 +41,16 @@ export type Job = { id: string; sessionId: string; accountId: string; sourceId: 
 export type LogEntry = { id: number; at: string; level: 'info' | 'warning' | 'error'; code: string; text: string; jobId: string | null };
 export type Reader = { prepare(target: Config['target'], signal: AbortSignal): Promise<Account>;
   read(signal: AbortSignal): Promise<WindowRead>; openLogin(): Promise<void>; close(): Promise<void> };
+export type SubmissionBatch = { onDispatchComplete: () => void; waitForConfirmation: () => Promise<void> };
 export type SubmitHooks = { signal: AbortSignal; beforeSubmit: () => void; onServerConfirmed?: (result: ConfirmedResult) => void;
   onSubmitted?: () => void;
-  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void };
+  onStage?: (stage: ActionStage) => void; onServerResponse?: (kind: 'confirmed' | 'acknowledged') => void;
+  batch?: SubmissionBatch };
 export type ConfirmedResult = { externalId?: string; externalUrl?: string; code?: string;
   shareProof?: { identityVerified: boolean; audience: 'only_me' | 'public' | null } };
-export type ActionAdapter = { prepare(account: Account): Promise<void>;
+export type ActionAdapter = { prepare(account: Account, signal?: AbortSignal): Promise<void>;
   execute(name: ActionName, job: Job, hooks: SubmitHooks): Promise<ConfirmedResult>;
+  runActions?: (job: Job, signal: AbortSignal, perform: (name: ActionName, batch?: SubmissionBatch) => Promise<void>) => Promise<void>;
   release?: () => Promise<void>;
   reconcile?: (name: ActionName, job: Job) => Promise<ConfirmedResult | null>;
   stop(): Promise<void>; close(): Promise<void> };

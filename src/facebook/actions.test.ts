@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium, type Route } from 'playwright-core';
+import { setTimeout as delay } from 'node:timers/promises';
+import { chromium, type Page, type Route } from 'playwright-core';
 import { BrowserSession } from './browser.ts';
 import { FacebookActions } from './actions.ts';
 import { Engine } from '../engine.ts';
 import { Store } from '../store.ts';
-import { DEFAULT_CONFIG, ACTIONS } from '../config.ts';
+import { DEFAULT_CONFIG, type ActionName } from '../config.ts';
 import type { Reader } from '../types.ts';
 
 const accountScript = `<script>globalThis.require=name=>name==='CurrentUserInitialData'
@@ -34,22 +35,35 @@ function originalHtml(showSharedCard = false, commentDelayMs = 0) {
   </script>`;
 }
 
-async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public'; commentDelayMs?: number }) {
+async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 'response' | 'ui' | 'missing' | 'wrong'; publishedAudience?: 'public'; commentDelayMs?: number; actionTabs?: 2 | 3 }) {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: null });
   const session = new BrowserSession(); session.context = context; session.browser = browser;
   const store = new Store(':memory:'); store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
-  const adapter = new FacebookActions(session);
+  const adapter = new FacebookActions(session, {}, options.actionTabs);
   const reader: Reader = { async prepare() { return { id: '10', name: 'Test' }; }, async read() { throw Error('Unused'); }, async openLogin() {}, async close() {} };
   const engine = new Engine(store, reader, adapter);
   const writes: string[] = [], navigations: string[] = [];
+  const workers: Page[] = [], writePages = new Map<string, Page>();
+  const confirmationAfterDispatch: number[] = [];
+  const dispatched = new Set<ActionName>();
+  let releaseShare!: () => void;
+  const likeSent = new Promise<void>(resolve => { releaseShare = resolve; });
+  const execute = adapter.execute.bind(adapter);
+  adapter.execute = (name, job, hooks) => execute(name, job, { ...hooks,
+    onSubmitted() { dispatched.add(name); hooks.onSubmitted?.(); },
+    onServerResponse(kind) { confirmationAfterDispatch.push(dispatched.size); hooks.onServerResponse?.(kind); } });
   // Every request is fulfilled locally. No Facebook account or external network is used.
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.pathname === '/api/graphql/') {
       const form = new URLSearchParams(request.postData() || ''), name = form.get('fb_api_req_friendly_name')!;
       writes.push(name);
-      if (name === 'FeedbackReactMutation') return route.fulfill({ json: { data: { feedback_react: { feedback: { id: 'feedback-30', viewer_has_reacted: true } } } } });
+      writePages.set(name, request.frame().page());
+      if (name === 'FeedbackReactMutation') {
+        releaseShare();
+        return route.fulfill({ json: { data: { feedback_react: { feedback: { id: 'feedback-30', viewer_has_reacted: true } } } } });
+      }
       if (name === 'CommentCreateMutation') return route.fulfill({ json: { data: { comment_create: options.comment === 'ack' ? {} : {
         feedback: { id: 'feedback-original-30' }, feedback_comment_edge: { node: { __typename: 'Comment', id: 'server_comment_100' } },
       } } } });
@@ -61,6 +75,10 @@ async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 
       throw Error('Unexpected mock mutation');
     }
     if (request.isNavigationRequest()) navigations.push(request.url());
+    if (options.actionTabs === 2 && url.searchParams.get('story_fbid') === '30' && request.frame().page() === workers[1]) {
+      // Let the mock return early responses on the shared tab while Share is still preparing.
+      await Promise.race([likeSent, delay(8000, undefined, { ref: false })]);
+    }
     const shared = request.url() === ownUrl;
     const body = shared ? accountScript + `<script type="application/json">{"__typename":"Story","post_id":"40","actors":[{"id":"10"}]}</script>
       <div role="dialog"><h1>Bài viết của Test</h1><div><a href="${ownUrl}">Time</a><span aria-label="${options.publishedAudience === 'public' ? 'Public' : 'Only me'}"></span></div></div>` : originalHtml(options.share === 'ui', options.commentDelayMs);
@@ -71,6 +89,7 @@ async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 
     const create = session.newBackgroundPage.bind(session);
     session.newBackgroundPage = async () => {
       const page = await create(), originalRoute = page.route.bind(page), originalUnroute = page.unroute.bind(page);
+      workers.push(page);
       const handlers = new Map<any, any>();
       // Production's actor guard continues an approved request. In this fixture only,
       // continue falls through to the local context mock rather than reaching the internet.
@@ -84,14 +103,15 @@ async function runWorkers(options: { comment: 'ack' | 'edge'; share: 'legacy' | 
       page.unroute = async (url, handler) => { await originalUnroute(url, handler ? handlers.get(handler) || handler : undefined); };
       return page;
     };
-    await adapter.prepare({ id: '10', name: 'Test' });
     const id = store.baseline('10', '20', 100, []);
     const job = store.testJob('10', '20', id, { post_id: '30', creation_time: 110, permalink: null, sourceVerification: 'owner' }, store.config());
-    await Promise.all(ACTIONS.map(name => engine.perform(name, job, new AbortController().signal)));
+    engine.account = { id: '10', name: 'Test' };
+    engine.queue.push(job.id);
+    await engine.dispatch();
     const result = store.job(job.id)!;
     if (!options.publishedAudience) assert.ok(result.actions.every(action => action.state === 'succeeded'), JSON.stringify(result.actions));
     assert.equal(writes.length, 3, 'read-back must not submit another interaction');
-    return { result, navigations };
+    return { result, navigations, writes, writePages, confirmationAfterDispatch };
   } finally { await engine.close(); store.close(); await browser.close(); }
 }
 
@@ -131,6 +151,38 @@ test('bound singular-edge comments and complete share responses avoid both read-
   assert.ok(!share.timing!.trace!.steps.some(s => s.stage.startsWith('share_readback')));
   assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 3);
   assert.equal(navigations.filter(url => url === ownUrl).length, 0);
+});
+
+test('two tabs send Comment then Like on one page and defer every confirmation until all requests are sent', { timeout: 40_000 }, async () => {
+  const { result, navigations, writes, writePages, confirmationAfterDispatch } = await runWorkers({ actionTabs: 2, comment: 'ack', share: 'response' });
+  assert.deepEqual(writes, ['CommentCreateMutation', 'FeedbackReactMutation', 'ComposerStoryCreateMutation']);
+  assert.equal(writePages.get(writes[0]), writePages.get(writes[1]));
+  assert.notEqual(writePages.get(writes[0]), writePages.get(writes[2]));
+  assert.deepEqual(confirmationAfterDispatch, [3, 3, 3]);
+  assert.equal(navigations.filter(url => url.includes('story_fbid=30')).length, 3, 'two original loads plus the Comment read-back');
+  assert.equal(result.actions.find(action => action.name === 'comment')?.code, 'SERVER_CONFIRMED_AND_READ_BACK');
+});
+
+test('stopping while Comment is preparing releases Share confirmation and leaves Like unsent', { timeout: 5000 }, async () => {
+  const store = new Store(':memory:');
+  try {
+    store.saveConfig({ ...DEFAULT_CONFIG, mode: 'test' });
+    const sessionId = store.baseline('10', '20', 100, []);
+    const job = store.testJob('10', '20', sessionId, { post_id: '30', creation_time: 110, permalink: null, sourceVerification: 'owner' }, store.config());
+    const adapter = new FacebookActions(new BrowserSession(), {}, 2);
+    const controller = new AbortController(), started: ActionName[] = [];
+    const running = adapter.runActions(job, controller.signal, async (name, batch) => {
+      started.push(name);
+      if (name === 'comment') await new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true }));
+      if (name === 'share') {
+        batch!.onDispatchComplete();
+        await assert.rejects(batch!.waitForConfirmation(), { name: 'AbortError' });
+      }
+    });
+    controller.abort();
+    await running;
+    assert.deepEqual(started, ['comment', 'share']);
+  } finally { store.close(); }
 });
 
 test('share privacy may be verified from its own published card without navigating', { timeout: 30_000 }, async () => {

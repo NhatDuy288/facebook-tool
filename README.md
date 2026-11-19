@@ -5,7 +5,7 @@ Tool theo dõi bài Facebook mới và thực hiện Like, Share, Comment theo c
 Điểm chính:
 
 - Lấy 3 bài hiện có làm mốc; theo dõi bài mới từ các lượt đọc tiếp theo.
-- Ba thao tác chạy song song trên tab nền, giữ nguyên cửa sổ đang thu nhỏ và ứng dụng bạn đang dùng.
+- Mặc định dùng 2 tab nền: Bình luận rồi Like trên cùng tab, Chia sẻ chạy song song trên tab riêng; giữ nguyên cửa sổ đang thu nhỏ và ứng dụng bạn đang dùng.
 - Chỉnh bình luận luân phiên, lời chia sẻ, hashtag, nguồn và khoảng chờ trên giao diện.
 - Lưu công việc trước khi gửi; kết quả chưa rõ cần đối soát, không tự gửi lại.
 
@@ -40,6 +40,10 @@ npm.cmd start
 Mỗi lần khởi động có thể dùng cổng khác. Dùng địa chỉ/cửa sổ mới được tool mở; địa chỉ hiện tại cũng nằm trong `data/runtime.json`.
 
 Mỗi lượt yêu cầu 3 bài trong luồng chính đã xác minh. Nếu có dấu hiệu ghim/nổi bật hoặc thứ tự không theo giờ đăng, kiểm tra mở rộng tối đa 5 bài bằng cursor thực tế, không quá 2 yêu cầu/lượt. UI vẫn hiện 3 bài theo giờ đăng trong tập đã đọc; mọi ID đã xác minh đều tham gia chống trùng/nhận bài. Bài cũ được đưa lên lại không thành bài mới vì đổi vị trí. Thiếu bằng chứng giữ danh sách hợp lệ trước đó; không bảo đảm Facebook luôn trả các bài mới nhất.
+
+SQLite lưu công việc và nội dung trước khi gửi. Mặc định Bình luận gửi trước rồi đến Like trên cùng tab, còn Chia sẻ chạy song song trên tab riêng. Các thao tác đã gửi được xác nhận sau khi mọi nhánh đang chờ gửi đã gửi hoặc kết thúc. Tool lưu kết quả từng thao tác và đóng các tab tác vụ sau khi xử lý.
+
+Để quay về cách chạy 3 tab độc lập, đợi các thao tác đang chạy xong, bấm **Đóng tool** rồi mở `Start-Tool-3-Tabs.cmd`. Cả hai cách dùng cùng phiên trình duyệt và dữ liệu SQLite. Mở lại bằng `Start-Tool.cmd` để dùng 2 tab. Sau khi đổi, bấm **Bắt đầu** để lấy mốc mới và theo dõi.
 
 ## Chế độ và kết quả
 

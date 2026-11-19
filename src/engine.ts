@@ -6,7 +6,7 @@ import { Store } from './store.ts';
 import { errorCode, message } from './errors.ts';
 import { ActionTrace } from './action-trace.ts';
 import { ScanHistory, type ScanRecord, type ScanSnapshot } from './scan-history.ts';
-import type { Reader, ActionAdapter, Account, WindowRead, Post, Job, JobTiming, ActionTiming, ReadTiming, ActionPreparation } from './types.ts';
+import type { Reader, ActionAdapter, Account, WindowRead, Post, Job, JobTiming, ActionTiming, ReadTiming, ActionPreparation, SubmissionBatch } from './types.ts';
 export type Phase = 'idle' | 'initializing' | 'ready' | 'watching' | 'stopping' | 'error';
 export class Engine {
   store: Store; reader: Reader; adapter: ActionAdapter;
@@ -111,7 +111,7 @@ export class Engine {
     this.lastReadTiming = null; this.jobClocks.clear(); this.flushScanSnapshots(); this.scanHistory.clear();
     const config = this.store.config();
     this.account = await this.reader.prepare(config.target, signal); signal.throwIfAborted();
-    if (config.mode !== 'dry-run') await this.adapter.prepare(this.account);
+    if (config.mode !== 'dry-run') await this.adapter.prepare(this.account, signal);
     else await this.adapter.stop();
     signal.throwIfAborted();
     const first = await this.readChecked(signal); signal.throwIfAborted();
@@ -270,20 +270,21 @@ export class Engine {
       const id = this.queue.shift()!, job = this.store.job(id)!; this.activeJob = id;
       try {
         const dispatchStarted = performance.now(), clock = this.jobClocks.get(id);
-        await this.adapter.prepare(this.account!); signal.throwIfAborted();
+        await this.adapter.prepare(this.account!, signal); signal.throwIfAborted();
         const preparation: ActionPreparation = {
           readRemainderMs: clock ? Math.max(0, clock.readCompletedMono - clock.referenceMono) : null,
           dispatchWaitMs: clock ? Math.max(0, dispatchStarted - clock.readCompletedMono) : null,
           tabsMs: performance.now() - dispatchStarted };
-        // Each worker owns a separate tab; all enabled actions enter together.
-        await Promise.all(ACTIONS.map(name => this.perform(name, job, signal, preparation)));
+        const perform = (name: ActionName, batch?: SubmissionBatch) => this.perform(name, job, signal, preparation, batch);
+        if (this.adapter.runActions) await this.adapter.runActions(job, signal, perform);
+        else await Promise.all(ACTIONS.map(name => perform(name)));
       } finally {
         try { await this.adapter.release?.(); }
         finally { this.activeJob = null; this.flushScanSnapshots(); this.pruneJobHistory(); }
       }
     }
   }
-  async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation): Promise<void> {
+  async perform(name: ActionName, job: Job, signal: AbortSignal, preparation?: ActionPreparation, batch?: SubmissionBatch): Promise<void> {
     const started = performance.now(), startedAt = new Date().toISOString(), clock = this.jobClocks.get(job.id);
     const trace = new ActionTrace(started); trace.enter('prepare_action');
     const initialTiming: ActionTiming = { version: 3, startedAt, finishedAt: null, sentAt: null, queueMs: clock ? started - clock.referenceMono : null,
@@ -308,7 +309,7 @@ export class Engine {
     };
     const finishTiming = (): ActionTiming => sentTiming ?? { ...initialTiming, trace: trace.snapshot() };
     try {
-      const result = await this.adapter.execute(name, job, { signal,
+      const result = await this.adapter.execute(name, job, { signal, batch,
         onStage: stage => trace.enter(stage),
         onSubmitted: recordSent,
         onServerConfirmed: result => this.store.evidence(job.id, name, result), beforeSubmit: () => {

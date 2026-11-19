@@ -31,7 +31,8 @@ try {
 }
 await writeFile(lockPath, JSON.stringify({ pid: process.pid }));
 const store = new Store(join(dataDir, 'tool.sqlite'));
-const browser = new BrowserSession(), reader = new FacebookReader(browser), adapter = new FacebookActions(browser);
+const actionTabs = process.env.FACEBOOK_TOOL_ACTION_TABS === '3' ? 3 : 2;
+const browser = new BrowserSession(), reader = new FacebookReader(browser), adapter = new FacebookActions(browser, {}, actionTabs);
 const engine = new Engine(store, reader, adapter);
 const key = randomBytes(24).toString('hex'); let origin = '', closing = false;
 const assets: Record<string, { file: string; type: string }> = {
@@ -59,7 +60,7 @@ const server = createServer(async (request, response) => {
     const status = typeof jobsRevision === 'string' && typeof logsRevision === 'string'
       ? engine.dashboardStatus(jobsRevision, logsRevision, Number(request.headers['x-tool-jobs-page']), request.headers['x-tool-log-feed'] === '1')
       : engine.status();
-    reply(200, { ...status, sources: READ_TARGETS, browser: { channel: browser.channel, sessionSaved: status.config.keepSession }, closing }); return;
+    reply(200, { ...status, sources: READ_TARGETS, browser: { channel: browser.channel, sessionSaved: status.config.keepSession, actionTabs }, closing }); return;
   }
   if (request.method === 'GET' && (request.url === '/api/logs' || request.url?.startsWith('/api/logs?'))) {
     const before = new URL(request.url, origin).searchParams.get('before');
@@ -119,10 +120,10 @@ try {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   await browser.launch(store.config(), join(dataDir, 'browser-profile'), origin + '/');
-  await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ running: true, pid: process.pid, url: origin + '/', startedAt: new Date().toISOString() }));
+  await writeFile(join(dataDir, 'runtime.json'), JSON.stringify({ running: true, pid: process.pid, url: origin + '/', actionTabs, startedAt: new Date().toISOString() }));
   store.log('info', 'APP_STARTED', 'Tool đã mở trên laptop. Phiên theo dõi chỉ bắt đầu khi bấm Bắt đầu.');
   browser.context.on('close', () => { void shutdown(); });
-  console.log('Facebook Laptop Tool: ' + origin + '/');
+  console.log(`Facebook Laptop Tool (${actionTabs} tab thao tác): ${origin}/`);
   console.log('Giữ cửa sổ này để tool hoạt động. Đóng bằng nút Đóng tool trên giao diện.');
 } catch (error) {
   console.error(message(errorCode(error))); await shutdown(); process.exitCode = 1;

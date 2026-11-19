@@ -2,7 +2,7 @@ import type { Page, Locator, Response, Route } from 'playwright-core';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserSession, activeAccount } from './browser.ts';
 import { ACTIONS, type ActionName } from '../config.ts';
-import type { Account, Job, ActionAdapter, SubmitHooks, ConfirmedResult } from '../types.ts';
+import type { Account, Job, ActionAdapter, SubmitHooks, ConfirmedResult, SubmissionBatch } from '../types.ts';
 import { mutationConfirmation, mutationActorAllowed, safeFacebookUrl, commentRequestProof, mutationHasErrors } from './confirmation.ts';
 import { currentPageShareAudience } from './share-verification.ts';
 import { PostLoader, postReadyProbe, type LoadingOptions } from './post-loading.ts';
@@ -12,6 +12,22 @@ const LIKED = /^(Bỏ thích|Unlike|Đã thích|Liked|Gỡ lượt thích|Gỡ T
 const SHARE = /^(Chia sẻ|Share|Chia sẻ bài viết của .+|Share .+['’]s post)$/i;
 const COMMENT = /^(Bình luận|Comment|Bình luận về bài viết của .+|Comment on .+['’]s post.*)$/i;
 const ONLY_ME = /Chỉ mình tôi|Only me/i, PUBLIC = /Công khai|Public/i;
+const SUBMISSION_TIMEOUT_MS = 18_000;
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function waitForDispatch(dispatched: Promise<void>, signal: AbortSignal) {
+  const timer = new AbortController();
+  try {
+    await Promise.race([dispatched, delay(SUBMISSION_TIMEOUT_MS, undefined, { signal: AbortSignal.any([signal, timer.signal]) })
+      .then(() => { throw Error('RESULT_UNCONFIRMED'); })]);
+    signal.throwIfAborted();
+  } finally { timer.abort(); }
+}
 
 async function oneVisible(locator: Locator, timeout = 6000): Promise<Locator> {
   const end = Date.now() + timeout;
@@ -49,7 +65,7 @@ class MutationObserver {
   page: Page; action: ActionName; job: Job;
   armed = false; result: ConfirmedResult | null = null; failed = false; listener: (response: Response) => void;
   safeResponses: unknown[] = [];
-  constructor(page: Page, action: ActionName, job: Job, feedbackIds: string[], onServerResponse?: SubmitHooks['onServerResponse']) {
+  constructor(page: Page, action: ActionName, job: Job, feedbackIds: string[], hooks: SubmitHooks) {
     this.page = page; this.action = action; this.job = job;
     this.listener = response => {
       if (!this.armed) return;
@@ -65,6 +81,8 @@ class MutationObserver {
       void (async () => {
         if (!response.ok()) { this.failed = true; return; }
         const raw = await response.body(); if (raw.byteLength > 8 * 1024 * 1024) return;
+        // Capture the body while the page still has it, then verify after all sends.
+        if (hooks.batch) await hooks.batch.waitForConfirmation();
         const records = parseRecords(raw.toString('utf8'));
         const nodes: { type: string; keys: string[] }[] = [], stack = records.map((r: any) => r?.data); let visited = 0;
         while (stack.length && ++visited < 10000 && nodes.length < 15) {
@@ -86,13 +104,13 @@ class MutationObserver {
           this.result = { code: 'SERVER_ACK_REQUIRES_RECONCILIATION' };
         diagnostic.confirmation = this.result?.code ?? 'unconfirmed';
         if (this.result?.shareProof) diagnostic.shareProof = this.result.shareProof;
-        if (this.result) onServerResponse?.(this.result.code === 'SERVER_ACK_REQUIRES_RECONCILIATION' ? 'acknowledged' : 'confirmed');
+        if (this.result) hooks.onServerResponse?.(this.result.code === 'SERVER_ACK_REQUIRES_RECONCILIATION' ? 'acknowledged' : 'confirmed');
       })().catch(() => {});
     };
     page.on('response', this.listener);
   }
   async confirmed(signal: AbortSignal): Promise<ConfirmedResult> {
-    const deadline = Date.now() + 18000;
+    const deadline = Date.now() + SUBMISSION_TIMEOUT_MS;
     while (!this.result && !this.failed && Date.now() < deadline && !signal.aborted) await delay(100);
     if (!this.result || signal.aborted) throw Error('RESULT_UNCONFIRMED');
     return this.result;
@@ -107,31 +125,96 @@ export class FacebookActions implements ActionAdapter {
   lastMutations = new Map<ActionName, unknown[]>();
   postIds = new Map<ActionName, string>();
   shareBinding = new WeakMap<Page, string>();
+  private loadedOriginal = new WeakMap<Page, { jobId: string; url: string }>();
   loader: PostLoader;
-  constructor(session: BrowserSession, loading: LoadingOptions = {}) { this.session = session; this.loader = new PostLoader(loading); }
-  async prepare(account: Account) {
+  readonly actionTabs: 2 | 3;
+  constructor(session: BrowserSession, loading: LoadingOptions = {}, actionTabs: 2 | 3 = 3) {
+    this.session = session; this.loader = new PostLoader(loading); this.actionTabs = actionTabs;
+  }
+  private async newWorker(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const page = await this.session.newBackgroundPage();
+    try {
+      await this.loader.prepare(page);
+      signal?.throwIfAborted();
+      return page;
+    } catch (error) {
+      await page.close().catch(() => {});
+      throw error;
+    }
+  }
+  async prepare(account: Account, signal?: AbortSignal) {
     this.account = account;
-    for (const name of ACTIONS) if (!this.pages.get(name) || this.pages.get(name)!.isClosed()) {
-      const page = await this.session.newBackgroundPage(); await this.loader.prepare(page); this.pages.set(name, page);
+    const groups: ActionName[][] = this.actionTabs === 2 ? [['comment', 'like'], ['share']] : ACTIONS.map(name => [name]);
+    for (const group of groups) {
+      signal?.throwIfAborted();
+      const existing = this.pages.get(group[0]);
+      const page = existing && !existing.isClosed() ? existing : await this.newWorker(signal);
+      for (const name of group) this.pages.set(name, page);
+    }
+  }
+  async runActions(job: Job, signal: AbortSignal, perform: (name: ActionName, batch?: SubmissionBatch) => Promise<void>) {
+    if (this.actionTabs === 3) {
+      await Promise.all(ACTIONS.map(name => perform(name)));
+      return;
+    }
+    const pending = new Set(job.actions.filter(action => action.state === 'ready').map(action => action.name));
+    if (!pending.size) return;
+    const commentDone = deferred(), allDone = deferred();
+    if (!pending.has('comment')) commentDone.resolve();
+    const release = () => { commentDone.resolve(); allDone.resolve(); };
+    const waitForConfirmation = async () => { await allDone.promise; signal.throwIfAborted(); };
+    const run = async (name: ActionName) => {
+      if (!pending.has(name) || signal.aborted) return;
+      const onDispatchComplete = () => {
+        pending.delete(name);
+        if (name === 'comment') commentDone.resolve();
+        if (!pending.size) allDone.resolve();
+      };
+      // A skipped, failed or already completed action must also release its slot.
+      try { await perform(name, { onDispatchComplete, waitForConfirmation }); }
+      finally { onDispatchComplete(); }
+    };
+    const likeAfterComment = async () => { await commentDone.promise; await run('like'); };
+    signal.addEventListener('abort', release, { once: true });
+    try {
+      if (signal.aborted) return;
+      const results = await Promise.allSettled([run('comment'), run('share'), likeAfterComment()]);
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    } finally {
+      signal.removeEventListener('abort', release);
     }
   }
   async execute(name: ActionName, job: Job, hooks: SubmitHooks): Promise<ConfirmedResult> {
     hooks.signal.throwIfAborted();
     if (!this.account || this.account.id !== job.accountId) throw Error('ACTOR_CHANGED');
-    const page = this.pages.get(name); if (!page || page.isClosed()) throw Error('STOPPED');
+    let page = this.pages.get(name);
+    const previous = page && this.loadedOriginal.get(page);
+    // Leave a pending Comment response on its own document if Facebook changed the page during submission.
+    if (hooks.batch && name === 'like' && (!page || page.isClosed() || previous?.jobId === job.id && previous.url !== page.url())) {
+      page = await this.newWorker(hooks.signal);
+      this.pages.set(name, page);
+    }
+    if (!page || page.isClosed()) throw Error('STOPPED');
+    const dispatched = hooks.batch ? deferred() : null;
+    let dispatchComplete = false;
     // Install only immediately before submitting, then remove before read-back navigation.
     // Routing disables HTTP cache, so it must not cover initial page/composer rendering.
     const writeGuard = async (route: Route) => {
       const request = route.request(), body = request.postData();
       let sendingAction = false;
       if (request.method() === 'POST' && body) {
-        if (!mutationActorAllowed(new URLSearchParams(body), job.accountId)) { await route.abort('blockedbyclient'); return; }
         const form = new URLSearchParams(body);
         const operation = form.get('fb_api_req_friendly_name') || '';
+        const mutation = /Mutation$/.test(operation);
+        if ((mutation && hooks.signal.aborted) || !mutationActorAllowed(form, job.accountId)) { await route.abort('blockedbyclient'); return; }
         const expected = name === 'comment' ? /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i
           : name === 'like' ? /(?:React|Reaction|Like)/i : /(?:StoryCreate|CreateStory|Share)/i;
-        sendingAction = observation.armed && /Mutation$/.test(operation) && expected.test(operation) && form.get('__user') === job.accountId;
-        if (name === 'comment' && /(?:Comment|UFI).*?(?:Create|Submit)|(?:Create|Submit).*Comment/i.test(form.get('fb_api_req_friendly_name') || '')) {
+        const ownOperation = expected.test(operation);
+        // A newer guard on the shared tab must let the earlier guard validate its own mutation.
+        if (hooks.batch && mutation && !ownOperation) { await route.fallback(); return; }
+        sendingAction = observation.armed && mutation && ownOperation && form.get('__user') === job.accountId;
+        if (name === 'comment' && ownOperation) {
           const proof = commentRequestProof(form, job, original.feedbackIds);
           if (!proof.commentRequestCompatible) {
             await route.abort('blockedbyclient'); return;
@@ -141,14 +224,18 @@ export class FacebookActions implements ActionAdapter {
       await route.continue();
       // The browser has released this action's allowed mutation to the network.
       // This records dispatch, independently of HTTP response or verification.
-      if (sendingAction) hooks.onSubmitted?.();
+      if (sendingAction) { hooks.onSubmitted?.(); dispatched?.resolve(); }
     };
     const stage = (value: Parameters<NonNullable<SubmitHooks['onStage']>>[0]) => { this.stages.set(name, value); hooks.onStage?.(value); };
     stage('navigate_original_post'); this.postIds.set(name, job.post.post_id);
-    await this.loader.load(page, postUrl(job), { postId: job.post.post_id, sourceId: job.sourceId, actorId: job.accountId, need: 'actions' }, hooks.signal);
+    const loaded = this.loadedOriginal.get(page);
+    if (!hooks.batch || loaded?.jobId !== job.id || loaded.url !== page.url()) {
+      await this.loader.load(page, postUrl(job), { postId: job.post.post_id, sourceId: job.sourceId, actorId: job.accountId, need: 'actions' }, hooks.signal);
+    }
     hooks.signal.throwIfAborted();
     stage('verify_original_post');
     const original = await verifyPost(page, job.post.post_id, job.sourceId, job.accountId);
+    if (hooks.batch) this.loadedOriginal.set(page, { jobId: job.id, url: page.url() });
     stage('find_post_scope');
     const main = await postScope(page);
     await main.waitFor({ state: 'visible' });
@@ -163,7 +250,7 @@ export class FacebookActions implements ActionAdapter {
       if (likeCount === 1 && await candidate.getByRole('button', { name: COMMENT }).count() === 1) { bar = candidate; break; }
     }
     if (!bar) throw Error('UI_UNSUPPORTED');
-    const observation = new MutationObserver(page, name, job, original.feedbackIds, hooks.onServerResponse);
+    const observation = new MutationObserver(page, name, job, original.feedbackIds, hooks);
     const send = async (control: Locator, keyboard = false) => {
       stage('prepare_submission');
       hooks.signal.throwIfAborted(); await activeAccount(page, job.accountId);
@@ -171,8 +258,14 @@ export class FacebookActions implements ActionAdapter {
       hooks.beforeSubmit(); hooks.signal.throwIfAborted(); observation.armed = true; stage('submit');
       if (keyboard) await control.press('Enter'); else await control.click({ timeout: 8000 });
       stage('wait_server');
+      if (hooks.batch && dispatched) {
+        await waitForDispatch(dispatched.promise, hooks.signal);
+        dispatchComplete = true;
+        hooks.batch.onDispatchComplete();
+      }
     };
     const confirmed = async () => {
+      if (hooks.batch) await hooks.batch.waitForConfirmation();
       const result = await observation.confirmed(hooks.signal);
       await page.unroute('https://www.facebook.com/api/graphql/', writeGuard);
       return result;
@@ -257,6 +350,10 @@ export class FacebookActions implements ActionAdapter {
       await verifyPost(page, result.externalId, job.accountId, job.accountId);
       await this.assertPublishedAudience(page, result.externalId, result.externalUrl, job.plan.audience, stage);
       return { ...result, code: 'SERVER_CONFIRMED_AND_READ_BACK' };
+    } catch (error) {
+      // Avoid reusing an editor left open by a failed attempt, or a page with an unobserved send still in flight.
+      if (hooks.batch && !dispatchComplete) await page.close().catch(() => {});
+      throw error;
     } finally { this.lastMutations.set(name, observation.safeResponses); observation.close(); await page.unroute('https://www.facebook.com/api/graphql/', writeGuard).catch(() => {}); }
   }
   async verifyShareDestination(page: Page, dialog: Locator, job: Job) {
@@ -336,7 +433,7 @@ export class FacebookActions implements ActionAdapter {
       return states.size === 1 ? [...states][0] as 'none' | 'reacted' : 'unknown';
     }, postId);
   }
-  async stop() { const pages = [...this.pages.values()]; this.pages.clear(); await Promise.allSettled(pages.map(page => page.close())); }
+  async stop() { const pages = [...new Set(this.pages.values())]; this.pages.clear(); await Promise.allSettled(pages.map(page => page.close())); }
   async close() { await this.stop(); }
   async reconcile(name: ActionName, job: Job, signal?: AbortSignal, onStage?: SubmitHooks['onStage']): Promise<ConfirmedResult | null> {
     signal?.throwIfAborted();
@@ -438,8 +535,8 @@ export class FacebookActions implements ActionAdapter {
     return found.length === 1 ? found[0] : null;
   }
   async release() {
-    this.lastDiagnostics = await this.diagnostics();
-    await this.stop(); // Release Facebook's loaded worker tabs while waiting for the next new post.
+    try { this.lastDiagnostics = await this.diagnostics(); }
+    finally { await this.stop(); }
   }
   async diagnostics() {
     if (!this.pages.size) return this.lastDiagnostics;
