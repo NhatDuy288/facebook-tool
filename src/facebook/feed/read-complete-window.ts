@@ -1,6 +1,8 @@
 // Bounded source-bound window; a three-post head may expand to five on ordering/promotion evidence.
 import type { Page } from 'playwright-core';
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
+import { safeTransportEvidence, type ReadTransportEvidence } from './read-diagnostics.ts';
 import type { BrowserReadResponse } from './browser-read.ts';
 import { SOURCE_ID, FB_ORIGIN } from './capture.ts';
 import type { AuthPost, AuthWindowResult } from './capture.ts';
@@ -24,6 +26,8 @@ export type SafeWindowBatch = { batchIndex: number; requestedCount: number; requ
   returnedPostCount: number; selectedPostCount: number; queryMs: number; httpStatus: number; decodedBodyBytes: number;
   responseComplete: boolean; usable: boolean; reasonCode: string | null; posts: AuthPost[]; markerMatchIds: string[];
   requestStartedAt?: number | null; headersReceivedAt?: number | null;
+  transport?: ReadTransportEvidence | null; responseFingerprint?: string | null;
+  parseMs?: number | null; inspectMs?: number | null;
   hasNextPage: boolean | null; endCursorPresent: boolean; serverSeconds: number | null; inspection: AuthWindowResult['safeInspection'] };
 export type CompleteWindowResult = AuthWindowResult & { serverSeconds: number | null; firstSeenAt: string;
   observations: Record<string, PostObservation>;
@@ -163,7 +167,8 @@ export async function readCompleteWindow(page: Page, headForm: URLSearchParams,
       returnedPostCount: 0, selectedPostCount: 0, queryMs: 0, httpStatus: response.status(), decodedBodyBytes: 0,
       responseComplete: false, usable: false, reasonCode: null, posts: [], markerMatchIds: [],
       hasNextPage: null, endCursorPresent: false, serverSeconds: null, inspection: null,
-      requestStartedAt: response.timing?.requestStartedAt ?? null, headersReceivedAt: response.timing?.headersReceivedAt ?? null };
+      requestStartedAt: response.timing?.requestStartedAt ?? null, headersReceivedAt: response.timing?.headersReceivedAt ?? null,
+      transport: safeTransportEvidence(response.transport), responseFingerprint: null, parseMs: null, inspectMs: null };
     batches.push(batch);
     try {
       if (response.status() === 429) { batch.reasonCode = 'RATE_LIMIT'; return finish(batch.reasonCode); }
@@ -173,10 +178,14 @@ export async function readCompleteWindow(page: Page, headForm: URLSearchParams,
       if (!response.ok()) { batch.reasonCode = 'READ_FAILED'; return finish(batch.reasonCode); }
       const raw = await response.body(); batch.decodedBodyBytes = raw.byteLength; batch.responseComplete = true;
       if (raw.byteLength > MAX_BYTES) { batch.reasonCode = 'RESPONSE_LIMIT'; return finish(batch.reasonCode); }
+      batch.responseFingerprint = createHash('sha256').update(raw).digest('hex');
       let records: any[];
-      try { records = parseRecords(raw.toString('utf8')); }
+      const parseStarted = performance.now();
+      try { records = parseRecords(raw.toString('utf8')); batch.parseMs = performance.now() - parseStarted; }
       catch { batch.reasonCode = 'RESPONSE_NOT_JSON'; return finish(batch.reasonCode); }
+      const inspectStarted = performance.now();
       const result = inspectAuthWindow(records, options.marker, sourceId);
+      batch.inspectMs = performance.now() - inspectStarted;
       const observedMs = Date.now(), observedMonoMs = performance.now();
       const ms = responseServerMs(response);
       if (ms !== null) { serverSeconds = Math.floor(ms / 1000); batch.serverSeconds = serverSeconds; }

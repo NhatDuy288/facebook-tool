@@ -3,11 +3,13 @@ import type { Page } from 'playwright-core';
 import { QUERY_NAME } from './capture.ts';
 import { READ_TARGETS, matchesReadTargetUrl, type ReadTarget } from './read-target.ts';
 import { getObservedContinuation, type ObservedContinuation } from './observed-query-store.ts';
+import { transportFromHeaders, type ReadTransportEvidence } from './read-diagnostics.ts';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 type BrowserReadCode = 'SOURCE_PAGE_UNAVAILABLE' | 'INITIAL_QUERY_UNAVAILABLE'
   | 'READ_TIMEOUT' | 'RESPONSE_LIMIT' | 'READ_FAILED';
 type BrowserResult = { kind: 'response'; status: number; date?: string; bodyBase64: string;
+  diagnosticHeaders?: Record<string, string>; transport?: { requestCacheMode: string; headersMs: number; bodyMs: number; diagnosticsMs: number; resource: unknown };
   timing?: { requestStartedAt: number; headersReceivedAt: number } }
   | { kind: 'error'; code: BrowserReadCode };
 
@@ -17,6 +19,7 @@ export type BrowserReadResponse = {
   headers(): { date?: string };
   // Same-host wall times around fetch headers, before body download/decoding.
   timing?: { requestStartedAt: number; headersReceivedAt: number };
+  transport?: ReadTransportEvidence;
   body(): Promise<Buffer>;
   dispose(): Promise<void>;
 };
@@ -75,14 +78,32 @@ export async function readThroughBrowser(page: Page, form: URLSearchParams,
       const abort = new AbortController();
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       let tooLarge = false;
+      let observer: PerformanceObserver | undefined;
+      const resources: PerformanceResourceTiming[] = [];
+      const endpoint = 'https://www.facebook.com/api/graphql/';
+      let fetchStarted = 0, fetchIssued = 0;
+      const collect = (entries: PerformanceEntry[]) => {
+        for (const entry of entries) {
+          const r = entry as PerformanceResourceTiming;
+          // Match this synchronous fetch invocation, not an unrelated GraphQL request on the same page.
+          if (r.name === endpoint && r.initiatorType === 'fetch' && r.startTime >= fetchStarted
+            && r.startTime <= fetchIssued && resources.length < 8 && !resources.includes(r)) resources.push(r);
+        }
+      };
       try {
+        // Observer delivery still works when Facebook's long-lived resource timeline buffer fills up.
+        try { observer = new PerformanceObserver(list => collect(list.getEntries())); observer.observe({ type: 'resource' }); } catch { observer = undefined; }
         const requestStartedAt = Date.now();
-        const response = await fetch('https://www.facebook.com/api/graphql/', {
+        fetchStarted = performance.now();
+        const pendingResponse = fetch(endpoint, {
           method: 'POST', body, credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
           cache: 'no-store', signal: AbortSignal.any([timeout, abort.signal]),
           headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
             'X-FB-Friendly-Name': body.get('fb_api_req_friendly_name')! },
         });
+        fetchIssued = performance.now();
+        const response = await pendingResponse;
+        const headersMono = performance.now();
         const headersReceivedAt = Date.now();
         const chunks: Uint8Array[] = [];
         let byteCount = 0;
@@ -101,6 +122,27 @@ export async function readThroughBrowser(page: Page, form: URLSearchParams,
             chunks.push(value);
           }
         }
+        const bodyMono = performance.now();
+        // Resource entries are queued asynchronously after EOF. Yield one task without a throttled
+        // background-tab timer, a network probe, or waiting for any particular entry to arrive.
+        try { await new Promise<void>(resolve => {
+          const channel = new MessageChannel();
+          channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+          channel.port2.postMessage(null);
+        }); } catch { /* Optional timing cannot fail an otherwise usable response. */ }
+        // Missing or ambiguous timing is logged as unknown.
+        let resource: unknown = { match: 'unavailable' };
+        try {
+          collect(observer?.takeRecords() ?? []);
+          if (!resources.length) collect(performance.getEntriesByName(endpoint, 'resource'));
+          const r = resources.length === 1 ? resources[0] : null;
+          const elapsed = (end: number, start: number) => end >= start && start > 0 ? end - start : null;
+          resource = r ? { match: 'matched', transferBytes: r.transferSize, encodedBodyBytes: r.encodedBodySize,
+            decodedBodyBytes: r.decodedBodySize, workerStartMs: r.workerStart,
+            deliveryType: typeof (r as any).deliveryType === 'string' ? (r as any).deliveryType === 'cache' ? 'cache' : 'other' : null,
+            requestToFirstByteMs: elapsed(r.responseStart, r.requestStart), downloadMs: elapsed(r.responseEnd, r.responseStart), durationMs: r.duration }
+            : { match: resources.length > 1 ? 'ambiguous' : 'unavailable' };
+        } catch { /* No resource evidence is preferable to attributing the wrong request. */ }
         const bytes = new Uint8Array(byteCount);
         let offset = 0;
         for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
@@ -109,13 +151,19 @@ export async function readThroughBrowser(page: Page, form: URLSearchParams,
         for (let i = 0; i < bytes.byteLength; i += 32_768)
           parts.push(String.fromCharCode(...bytes.subarray(i, i + 32_768)));
         const date = response.headers.get('date');
+        const diagnosticHeaders: Record<string, string> = {};
+        for (const key of ['date', 'age', 'expires', 'cache-control', 'x-cache', 'x-cache-status', 'cf-cache-status', 'x-proxy-cache']) {
+          const value = response.headers.get(key); if (value) diagnosticHeaders[key] = value.slice(0, 1024);
+        }
         return { kind: 'response', status: response.status,
           date: date && date.length <= 128 ? date : undefined,
+          diagnosticHeaders, transport: { requestCacheMode: 'no-store', headersMs: headersMono - fetchStarted, bodyMs: bodyMono - headersMono,
+            diagnosticsMs: performance.now() - bodyMono, resource },
           timing: { requestStartedAt, headersReceivedAt },
           bodyBase64: btoa(parts.join('')) };
       } catch {
         return { kind: 'error', code: tooLarge ? 'RESPONSE_LIMIT' : timeout.aborted ? 'READ_TIMEOUT' : 'READ_FAILED' };
-      } finally { reader?.releaseLock(); }
+      } finally { observer?.disconnect(); reader?.releaseLock(); }
     }, { formText: form.toString(), sourceId: READ_TARGETS[target].sourceId, sourceUrl: READ_TARGETS[target].url, target, queryName: QUERY_NAME, verifiedAlternate, limit: MAX_BYTES });
   } catch { throw Error('READ_FAILED'); }
 
@@ -129,6 +177,7 @@ export async function readThroughBrowser(page: Page, form: URLSearchParams,
     ok: () => status >= 200 && status < 300,
     headers: () => date ? { date } : {},
     timing: result.timing,
+    transport: result.transport ? transportFromHeaders(result.diagnosticHeaders ?? {}, result.transport) : undefined,
     async body() { if (!data) throw Error('READ_FAILED'); return data; },
     async dispose() { data?.fill(0); data = null; },
   };

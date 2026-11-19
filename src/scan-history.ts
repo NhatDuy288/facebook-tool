@@ -1,4 +1,6 @@
 import type { Post, ReadTiming, WindowRead } from './types.ts';
+import { createHash } from 'node:crypto';
+import { safeTransportEvidence, safeFingerprint, type ReadTransportEvidence } from './facebook/feed/read-diagnostics.ts';
 
 export const SCAN_HISTORY_LIMIT = 60;
 export const SCAN_SNAPSHOT_LIMIT = 80;
@@ -9,6 +11,8 @@ export type ScanBatchEvidence = {
   queryMs: number; httpStatus: number; decodedBodyBytes: number; responseComplete: boolean;
   usable: boolean; reasonCode: string | null; serverSeconds: number | null; posts: ScanPost[];
   requestStartedAt?: number | null; headersReceivedAt?: number | null;
+  transport?: ReadTransportEvidence | null; responseFingerprint?: string | null;
+  parseMs?: number | null; inspectMs?: number | null;
   parser?: { mainTimelineEdgesObserved: number; parentSourceConflict: boolean; poisonedPostIds: string[];
     unsupportedPatchCount: number; rejectedEdges: { observedPostIds: string[]; classification: string }[] } | null;
 };
@@ -19,6 +23,13 @@ export type ScanRecord = {
   windowPolicy: WindowRead['windowPolicy'] | null; posts: ScanPost[]; verifiedPosts: ScanPost[]; batches: ScanBatchEvidence[];
   observations: { postId: string; observedAt: string; observedMonoMs: number | null; publicationDelayMs: number | null; clockOffsetMs: number | null }[];
   selection: { state: 'not_run' | 'baseline' | 'pending' | 'committed' | 'rolled_back'; errorCode: string | null; decisions: ScanDecision[] };
+  freshness: {
+    comparedWithSequence: number | null; windowFingerprint: string | null;
+    sameWindowAsPrevious: boolean | null; sameHeadResponseAsPrevious: boolean | null; headDateDeltaSeconds: number | null;
+    unchangedReads: number; unchangedForMs: number | null;
+    interpretation: 'read_not_valid' | 'first_observation' | 'window_changed' | 'cache_signal_present'
+      | 'unchanged_over_network_internal_cause_unknown' | 'unchanged_cause_unknown';
+  };
 };
 export type ScanContext = { sessionId: string | null; accountId: string | null; sourceId: string; serverFloor: number | null };
 export type ScanSnapshot = { version: 1; capacity: number; context: ScanContext; reads: ScanRecord[] };
@@ -34,6 +45,9 @@ export function scanBatches(batches: ScanBatchEvidence[]): ScanBatchEvidence[] {
     httpStatus: batch.httpStatus, decodedBodyBytes: batch.decodedBodyBytes, responseComplete: batch.responseComplete,
     usable: batch.usable, reasonCode: code(batch.reasonCode), serverSeconds: batch.serverSeconds, posts: batch.posts.slice(0, 5).map(post),
     requestStartedAt: batch.requestStartedAt ?? null, headersReceivedAt: batch.headersReceivedAt ?? null,
+    transport: safeTransportEvidence(batch.transport), responseFingerprint: safeFingerprint(batch.responseFingerprint),
+    parseMs: typeof batch.parseMs === 'number' && Number.isFinite(batch.parseMs) && batch.parseMs >= 0 ? batch.parseMs : null,
+    inspectMs: typeof batch.inspectMs === 'number' && Number.isFinite(batch.inspectMs) && batch.inspectMs >= 0 ? batch.inspectMs : null,
     parser: batch.parser ? { mainTimelineEdgesObserved: batch.parser.mainTimelineEdgesObserved,
       parentSourceConflict: batch.parser.parentSourceConflict, poisonedPostIds: batch.parser.poisonedPostIds.filter(id => /^\d{1,40}$/.test(id)).slice(0, 10),
       unsupportedPatchCount: batch.parser.unsupportedPatchCount,
@@ -60,7 +74,35 @@ export class ScanHistory {
         return observation ? [{ postId: post(p).post_id, observedAt: observation.observedAt,
           observedMonoMs: observation.observedMonoMs ?? null, publicationDelayMs: observation.publicationDelayMs, clockOffsetMs: observation.clockOffsetMs }] : [];
       }),
-      selection: { state: !errorCode && purpose === 'baseline' ? 'baseline' : 'not_run', errorCode: null, decisions: [] } };
+      selection: { state: !errorCode && purpose === 'baseline' ? 'baseline' : 'not_run', errorCode: null, decisions: [] },
+      freshness: { comparedWithSequence: null, windowFingerprint: null, sameWindowAsPrevious: null,
+        sameHeadResponseAsPrevious: null, headDateDeltaSeconds: null, unchangedReads: 0, unchangedForMs: null, interpretation: 'read_not_valid' } };
+    const previous = this.latest;
+    if (item.outcome === 'valid' && read?.usable) {
+      const fresh = item.freshness, head = item.batches[0];
+      // Compare only the source-verified window, independent of changing response metadata/comments.
+      fresh.windowFingerprint = createHash('sha256').update(JSON.stringify(item.verifiedPosts)).digest('hex');
+      fresh.interpretation = 'first_observation'; fresh.unchangedReads = 1; fresh.unchangedForMs = 0;
+      if (previous?.outcome === 'valid' && previous.freshness.windowFingerprint && previous.purpose === purpose) {
+        const oldHead = previous.batches[0];
+        fresh.comparedWithSequence = previous.sequence;
+        fresh.sameWindowAsPrevious = fresh.windowFingerprint === previous.freshness.windowFingerprint;
+        fresh.sameHeadResponseAsPrevious = head?.responseFingerprint && oldHead?.responseFingerprint
+          ? head.responseFingerprint === oldHead.responseFingerprint : null;
+        const date = head?.transport?.dateSeconds, oldDate = oldHead?.transport?.dateSeconds;
+        fresh.headDateDeltaSeconds = date != null && oldDate != null ? date - oldDate : null;
+        if (fresh.sameWindowAsPrevious) {
+          fresh.unchangedReads = previous.freshness.unchangedReads + 1;
+          fresh.unchangedForMs = Math.max(0, timing.completedMonoMs - previous.timing.completedMonoMs) + (previous.freshness.unchangedForMs ?? 0);
+          fresh.interpretation = head?.transport?.browserDelivery === 'network_transfer_observed'
+            ? 'unchanged_over_network_internal_cause_unknown' : 'unchanged_cause_unknown';
+        } else fresh.interpretation = 'window_changed';
+      }
+      // Neither identical bytes nor a fresh Date proves cache use or origin freshness.
+      if (item.batches.some(b => b.transport?.browserDelivery === 'local_cache_signal'
+        || ['hit_or_stale_reported', 'age_reported'].includes(b.transport?.sharedCache ?? '')))
+        fresh.interpretation = 'cache_signal_present';
+    }
     this.reads.push(item);
     if (this.reads.length > SCAN_HISTORY_LIMIT) this.reads.shift();
     return item;

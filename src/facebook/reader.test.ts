@@ -17,6 +17,9 @@ function fixture(expanded: boolean, wrongActor = false) {
     if (args?.formText) {
       const index = sent.length; sent.push(new URLSearchParams(args.formText));
       return { kind: 'response', status: 200, date: 'Mon, 09 Nov 2026 10:00:00 GMT',
+        diagnosticHeaders: { date: 'Mon, 09 Nov 2026 10:00:00 GMT', age: '0', 'cache-control': 'private, no-store', 'x-cache': 'MISS from private-host' },
+        transport: { requestCacheMode: 'no-store', headersMs: 700, bodyMs: 100,
+          resource: { match: 'matched', transferBytes: 1234, encodedBodyBytes: 900, workerStartMs: 0 } },
         bodyBase64: Buffer.from(JSON.stringify(records(index ? ['4','5'] : ['1','2','3']))).toString('base64') };
     }
     return { id: '10', userId: '10', personal: true, name: 'Test' };
@@ -41,7 +44,11 @@ test('production reader sends three to Facebook and displays only source-verifie
   assert.equal(result.scanBatches![0].httpStatus, 200);
   assert.deepEqual(result.scanBatches![0].posts.map(p => p.post_id), ['1','2','3']);
   assert.equal(result.scanBatches![0].parser!.mainTimelineEdgesObserved, 3);
-  assert.doesNotMatch(JSON.stringify(result.scanBatches), /fresh-test-value|captured-old-cursor|actual-source-cursor/);
+  assert.equal(result.scanBatches![0].transport!.browserDelivery, 'network_transfer_observed');
+  assert.equal(result.scanBatches![0].transport!.sharedCache, 'miss_or_bypass_reported');
+  assert.match(result.scanBatches![0].responseFingerprint!, /^[a-f0-9]{64}$/);
+  assert.ok(result.scanBatches![0].parseMs! >= 0); assert.ok(result.scanBatches![0].inspectMs! >= 0);
+  assert.doesNotMatch(JSON.stringify(result.scanBatches), /fresh-test-value|captured-old-cursor|actual-source-cursor|private-host/);
 });
 
 test('reader retains safe parser rejection evidence without accepting the rejected story', async () => {
